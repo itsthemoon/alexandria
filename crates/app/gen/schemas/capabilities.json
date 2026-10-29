@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Only what the window chrome needs: dragging the overlay title bar.","local":true,"windows":["main"],"permissions":["core:window:allow-start-dragging"]}}

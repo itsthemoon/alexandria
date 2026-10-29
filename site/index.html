@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alexandria — an offline library for your computer</title>
+<meta name="description" content="Wikipedia, medical references, repair and survival guides, a world map, translation and a local AI. All on your computer, all working with no internet.">
+<style>
+  :root { color-scheme: dark; --bg:#0b0b0c; --panel:#141517; --line:#26282c; --text:#e8e9ec; --muted:#9b9ea4; --silver: linear-gradient(145deg, #f1f2f4 0%, #b9bcc2 45%, #8d9097 100%); --link:#d4d7dc; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--text); font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 72px 24px 96px; }
+  .brand { display:flex; align-items:center; gap:12px; margin-bottom:56px; color:var(--muted); font-size:15px; }
+  .logo { width:34px; height:34px; border-radius:9px; background:var(--silver); color:#0b0b0c; display:grid; place-items:center; font: 600 20px Georgia, serif; }
+  h1 { font: 600 44px/1.15 Georgia, "Times New Roman", serif; margin: 0 0 18px; letter-spacing:-0.5px; }
+  .lead { font-size: 20px; color: var(--muted); margin: 0 0 40px; }
+  h2 { font: 600 24px Georgia, serif; margin: 56px 0 14px; }
+  .tabs { display:flex; gap:6px; margin-bottom:-1px; }
+  .tabs button { background:none; border:1px solid transparent; border-bottom:none; color:var(--muted); padding:8px 14px; border-radius:8px 8px 0 0; font: inherit; font-size:15px; cursor:pointer; }
+  .tabs button[aria-selected=true] { background:var(--panel); border-color:var(--line); color:var(--text); }
+  .cmd { background:var(--panel); border:1px solid var(--line); border-radius:0 10px 10px 10px; padding:14px 14px 14px 18px; display:flex; gap:12px; align-items:center; }
+  .cmd code { font: 14.5px var(--mono); flex:1; overflow-x:auto; white-space:nowrap; color:#e4e6ea; }
+  .copy { background:var(--silver); color:#0b0b0c; border:0; border-radius:7px; padding:8px 14px; font-weight:600; font-size:14px; cursor:pointer; }
+  .hint { color:var(--muted); font-size:15px; margin:12px 0 0; }
+  ol, ul { padding-left: 22px; } li { margin: 6px 0; }
+  ul.muted li { color: var(--muted); }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px; }
+  .card b { display:block; margin-bottom:2px; } .card span { color:var(--muted); font-size:15px; }
+  a { color: var(--link); text-decoration-color: rgba(212,215,220,.4); }
+  footer { margin-top:72px; color:var(--muted); font-size:14px; border-top:1px solid var(--line); padding-top:20px; }
+  @media (max-width: 620px) { h1 { font-size:34px; } .grid { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><div class="logo">A</div> Alexandria · preview v0.1.0</div>
+
+  <h1>An offline library for your computer.</h1>
+  <p class="lead">Wikipedia, medical references, repair and survival guides, a world map,
+  translation and a small AI that answers from those books. All on your computer. All
+  working with no internet. No account, no tracking.</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-os="unix">Mac or Linux</button>
+    <button role="tab" aria-selected="false" data-os="win">Windows</button>
+  </div>
+  <div class="cmd">
+    <code id="cmd">curl -fsSL https://itsthemoon.github.io/alexandria/install.sh | bash</code>
+    <button class="copy" id="copy">Copy</button>
+  </div>
+  <p class="hint" id="where">Open <b>Terminal</b>, paste this, and press Return.
+  Needs about 12 GB free. <a href="install.sh">Read the script first</a>.</p>
+
+  <h2>What happens</h2>
+  <ol>
+    <li>The app installs for you only — no admin password.</li>
+    <li>You choose where the library goes: your home folder or an external drive.</li>
+    <li>About 8 GB downloads, resuming if your connection drops.</li>
+    <li>Every byte is checked against the release signature. If anything is wrong, it stops.</li>
+    <li>Search is built on your computer (5 to 30 minutes). After that, it never goes online.</li>
+  </ol>
+
+  <h2>What's inside</h2>
+  <div class="grid">
+    <div class="card"><b>Simple English Wikipedia</b><span>286,000 articles</span></div>
+    <div class="card"><b>WikiMed</b><span>85,000 medical articles</span></div>
+    <div class="card"><b>iFixit</b><span>246,000 pages of repair guides</span></div>
+    <div class="card"><b>Appropedia</b><span>Low-tech and sustainable living</span></div>
+    <div class="card"><b>Survival guides</b><span>Water, food, field medicine, after a disaster</span></div>
+    <div class="card"><b>Ask, Translate, Map</b><span>A local AI, about 30 languages, the world map</span></div>
+  </div>
+
+  <h2>Good to know</h2>
+  <ul>
+    <li>It's a preview. The AI is small and can be wrong, so it always shows its sources.</li>
+    <li>The apps aren't signed with paid Apple or Microsoft certificates. The command above
+      avoids the warning; the <a href="https://github.com/itsthemoon/alexandria/releases">Releases page</a>
+      has normal downloads and the steps to open them.</li>
+    <li>Run the same command later to update. Only changed files download.</li>
+    <li>A Full edition with all of Wikipedia and street maps of the whole planet is next.</li>
+  </ul>
+
+  <h2>What it will not claim</h2>
+  <ul class="muted">
+    <li>That the content is true. A verified source can still be wrong.</li>
+    <li>That a computer with malware is safe. Malware can change what you see.</li>
+    <li>That a stolen signing key can't sign a bad release. That is why there are two keys and
+      releases need approval.</li>
+  </ul>
+
+  <footer>
+    Open source (Apache-2.0) on <a href="https://github.com/itsthemoon/alexandria">GitHub</a>.
+    Content: Wikipedia, WikiMed, Appropedia (CC BY-SA), iFixit (CC BY-NC-SA), map ©
+    OpenStreetMap contributors via Protomaps, archives by Kiwix, AI model LFM3 by Liquid AI.
+    This page has no analytics and loads nothing from other sites.
+  </footer>
+</main>
+<script>
+  const cmds = {
+    unix: ['curl -fsSL https://itsthemoon.github.io/alexandria/install.sh | bash',
+           'Open <b>Terminal</b>, paste this, and press Return. Needs about 12 GB free. <a href="install.sh">Read the script first</a>.'],
+    win:  ['irm https://itsthemoon.github.io/alexandria/install.ps1 | iex',
+           'Open <b>PowerShell</b> from the Start menu, paste this, and press Enter. Needs about 12 GB free. <a href="install.ps1">Read the script first</a>.'],
+  };
+  const show = os => {
+    document.getElementById('cmd').textContent = cmds[os][0];
+    document.getElementById('where').innerHTML = cmds[os][1];
+    document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.os === os));
+  };
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => show(b.dataset.os));
+  if (/Windows/.test(navigator.userAgent)) show('win');
+  document.getElementById('copy').onclick = async e => {
+    await navigator.clipboard.writeText(document.getElementById('cmd').textContent);
+    e.target.textContent = 'Copied'; setTimeout(() => e.target.textContent = 'Copy', 1500);
+  };
+</script>
+</body>
+</html>

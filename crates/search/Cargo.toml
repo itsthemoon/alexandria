@@ -1,0 +1,13 @@
+[package]
+name = "alexandria-search"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+alexandria-core = { path = "../core" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+pdf-extract = "0.12"
+
+[dev-dependencies]
+sha2 = "0.11"

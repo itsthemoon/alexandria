@@ -1,0 +1,155 @@
+name: platform-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ID of the release workflow run whose builds to test
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  artifact: alexandria-linux,         kind: linux }
+          - { os: windows-latest, artifact: alexandria-windows-x64,   kind: windows }
+          - { os: windows-11-arm, artifact: alexandria-windows-arm64, kind: windows }
+          - { os: macos-15-intel, artifact: alexandria-macos,         kind: mac }
+          - { os: macos-latest,   artifact: alexandria-macos,         kind: mac }
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KEY: ${{ vars.ALEXANDRIA_PUBKEY }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the release build
+        run: |
+          gh run download "${{ inputs.run_id }}" -n "${{ matrix.artifact }}" -D build
+          ls -la build
+          case "${{ matrix.kind }}" in
+            linux)   tar -xzf build/alexandria-linux-x64.tar.gz -C build
+                     echo "BIN=$PWD/build/alexandria" >> "$GITHUB_ENV"
+                     echo "APP=$PWD/build/alexandria/alexandria-app" >> "$GITHUB_ENV" ;;
+            windows) 7z x -obuild build/*.zip > /dev/null
+                     echo "BIN=$(cygpath -m "$PWD/build/alexandria")" >> "$GITHUB_ENV"
+                     echo "APP=$(cygpath -m "$PWD/build/alexandria/alexandria-app.exe")" >> "$GITHUB_ENV" ;;
+            mac)     tar -xzf build/Alexandria-macos.tar.gz -C build
+                     echo "BIN=$PWD/build/Alexandria.app/Contents/MacOS" >> "$GITHUB_ENV"
+                     echo "APP=$PWD/build/Alexandria.app/Contents/MacOS/Alexandria" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Get the signed test library (water guides, world map, LFM3)
+        run: |
+          LIB="$RUNNER_TEMP/Alexandria"
+          if command -v cygpath > /dev/null; then LIB=$(cygpath -m "$LIB"); fi
+          mkdir -p "$LIB"
+          echo "LIB=$LIB" >> "$GITHUB_ENV"
+          cp tests/fixture-library/MANIFEST tests/fixture-library/MANIFEST.sig tests/fixture-library/*.hashes "$LIB/"
+          while read -r name bytes sha url; do
+            if [ "$name" = world.pmtiles ]; then
+              gh release download library-data -p world.pmtiles -D "$LIB"
+            else
+              curl -fsSL --retry 5 -o "$LIB/$name" "$url"
+            fi
+            got=$( (sha256sum < "$LIB/$name" 2>/dev/null || shasum -a 256 < "$LIB/$name") | cut -d' ' -f1)
+            [ "$got" = "$sha" ] || { echo "checksum mismatch: $name"; exit 1; }
+          done < tests/fixture-library/files.txt
+
+      - name: Verify every byte
+        run: '"$BIN/alex" verify "$LIB" "$KEY"'
+
+      - name: Build search on this machine
+        run: '"$BIN/alex" index-library "$LIB" "$KEY"'
+
+      - name: Search finds a PDF guide
+        run: |
+          "$BIN/alex" search "$LIB" "$KEY" "purifying water emergency" | tee search.txt
+          grep -qi "water" search.txt
+
+      - name: Ask the local model
+        run: |
+          start=$(date +%s)
+          "$BIN/alex" ask "$LIB" "$KEY" "How do I purify water in an emergency?" | tee ask.txt
+          echo "took $(( $(date +%s) - start )) s"
+          [ "$(wc -w < ask.txt)" -ge 8 ] || { echo "answer too short"; exit 1; }
+
+      - name: The model runner opens no network sockets
+        if: (success() || failure()) && matrix.kind == 'linux'
+        run: |
+          ( "$BIN/alex" ask "$LIB" "$KEY" "Write a long answer about water treatment." > /dev/null & )
+          sleep 8
+          pid=$(pgrep -f llama-completion | head -1)
+          echo "llama-completion pid=$pid"
+          [ -n "$pid" ] || { echo "runner not found"; exit 1; }
+          n=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c socket || true)
+          echo "sockets: $n"
+          [ "$n" -eq 0 ]
+
+      - name: Launch the app (Linux)
+        if: (success() || failure()) && matrix.kind == 'linux'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq libwebkit2gtk-4.1-0 xvfb imagemagick > /dev/null
+          ldd "$APP" | grep "not found" && exit 1 || true
+          export ALEX_LIBRARY="$LIB"
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 LIBGL_ALWAYS_SOFTWARE=1
+          sudo apt-get install -yq x11-utils > /dev/null
+          xvfb-run -a -s "-screen 0 1440x960x24" bash -c '
+            "$APP" & pid=$!
+            for i in $(seq 1 90); do
+              kill -0 $pid || { echo "app exited"; exit 1; }
+              win=$(xwininfo -root -tree | grep -i "\"Alexandria\"" | head -1 | awk "{print \$1}")
+              [ -n "$win" ] && { echo "window after ${i}s"; break; }
+              sleep 1
+            done
+            xwininfo -root -tree | grep -i "alexandria" | tee windows.txt
+            [ -n "$win" ] || { echo "no Alexandria window"; exit 1; }
+            import -window "$win" shot.png || import -window root shot.png
+            kill $pid'
+
+      - name: Launch the app (Windows)
+        if: (success() || failure()) && matrix.kind == 'windows'
+        shell: pwsh
+        run: |
+          $env:ALEX_LIBRARY = $env:LIB
+          $p = Start-Process -FilePath $env:APP -PassThru
+          Start-Sleep -Seconds 25
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+          $bmp.Save("shot.png")
+          if ($p.HasExited) { Write-Error "app exited with $($p.ExitCode)"; exit 1 }
+          $p.Refresh()
+          "window title: '$($p.MainWindowTitle)'" | Tee-Object windows.txt
+          if ($p.MainWindowTitle -ne 'Alexandria') { Write-Error "no Alexandria window"; exit 1 }
+          Stop-Process -Id $p.Id
+
+      - name: Launch the app (Mac)
+        if: (success() || failure()) && matrix.kind == 'mac'
+        run: |
+          ALEX_LIBRARY="$LIB" "$APP" & pid=$!
+          sleep 25
+          screencapture -x shot.png || true
+          kill -0 $pid || { echo "app exited"; exit 1; }
+          kill $pid
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shot-${{ matrix.os }}
+          path: |
+            shot.png
+            windows.txt
+            search.txt
+            ask.txt
+          if-no-files-found: warn

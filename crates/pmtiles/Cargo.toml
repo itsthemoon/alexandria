@@ -1,0 +1,10 @@
+[package]
+name = "alexandria-pmtiles"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+alexandria-core = { path = "../core" }
+flate2 = "1"
+ruzstd = "0.8"

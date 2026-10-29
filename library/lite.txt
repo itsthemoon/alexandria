@@ -1,0 +1,20 @@
+# Alexandria Lite: every file the library is built from.
+#
+# One file per line:  <name> <bytes> <sha256> <url>
+# The build checks size and SHA-256 of every download before using it, then
+# the release signs the result. To propose a new pack, add one line and open
+# a pull request; CI downloads it and checks the hash.
+#
+# Search indexes (<name>.search.db) are built from the .zim files by
+# `alex index`; they are not listed here.
+
+wikipedia_en-simple_all_nopic_2026-09.zim 1094936257 ee93790aa7907c41570b0861fa15c3645bbcf6da208fd2a426a62459231a66f4 https://download.kiwix.org/zim/wikipedia/wikipedia_en-simple_all_nopic_2026-09.zim
+wikipedia_en_medicine_nopic_2026-10.zim 1047708415 718fadad40b3491be3fa8f95181a948e4d726f97a79a14e0ef1b90c6b2b03625 https://download.kiwix.org/zim/wikipedia/wikipedia_en_medicine_nopic_2026-10.zim
+ifixit_en_all_2025-12.zim 3570695757 9bb5f3408707fd0300c6ef47a425c3217187f144cd9154a928183816aa72eead https://download.kiwix.org/zim/ifixit/ifixit_en_all_2025-12.zim
+appropedia_en_all_maxi_2026-02.zim 581641351 dcf200ba723c27397e1c9a2e4891ff91fa13993df1fa285315190d8525a53469 https://download.kiwix.org/zim/other/appropedia_en_all_maxi_2026-02.zim
+zimgit-post-disaster_en_2024-05.zim 644665513 0ba9bb358b768b94eb0d7920752fe356bf097de514ee61843f3a4da6cce174f8 https://download.kiwix.org/zim/other/zimgit-post-disaster_en_2024-05.zim
+zimgit-water_en_2024-08.zim 20924451 392c7bc970a44fddd61dd17f6eabf1f4e21936f2d5c27c83093e1dc475cb56b6 https://download.kiwix.org/zim/other/zimgit-water_en_2024-08.zim
+zimgit-food-preparation_en_2025-04.zim 97822565 db92c6c9dac14ff30f1cbc15aa834a7c012c6e87d4ff0519f33a0902ab6e732b https://download.kiwix.org/zim/other/zimgit-food-preparation_en_2025-04.zim
+zimgit-medicine_en_2024-08.zim 70179585 a86c31b93e9800aae2cd812ef18cbf9c087a7537784c62fbc259db7f9f9d18c0 https://download.kiwix.org/zim/other/zimgit-medicine_en_2024-08.zim
+lfm3-1.7b-q4_0.gguf 1049615680 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452 https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf/LFM3-1.7B-QAD-Q4_0.gguf
+world.pmtiles 15040686 1839df1db934a49268f89b4461a011f5aa2af301d9c47d45a6ccbdfd29446010 https://github.com/itsthemoon/alexandria/releases/download/library-data/world.pmtiles

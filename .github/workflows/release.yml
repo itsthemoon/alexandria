@@ -1,0 +1,162 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require the pinned release key
+        run: test -n "${{ vars.ALEXANDRIA_PUBKEY }}" || (echo "ALEXANDRIA_PUBKEY repo variable is empty" && exit 1)
+      - name: Build universal app, CLI and dmg
+        env:
+          ALEXANDRIA_PUBKEY: ${{ vars.ALEXANDRIA_PUBKEY }}
+        run: ./scripts/package-macos.sh
+      - name: Smoke test
+        run: |
+          lipo -archs dist/Alexandria.app/Contents/MacOS/Alexandria
+          lipo -archs dist/Alexandria.app/Contents/MacOS/llama-completion
+          lipo -archs dist/Alexandria.app/Contents/MacOS/alex
+          dist/Alexandria.app/Contents/MacOS/llama-completion --version
+      - name: Archive for the install command
+        run: tar -C dist -czf dist/Alexandria-macos.tar.gz Alexandria.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alexandria-macos
+          path: |
+            dist/Alexandria-*.dmg
+            dist/Alexandria-macos.tar.gz
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require the pinned release key
+        run: test -n "${{ vars.ALEXANDRIA_PUBKEY }}" || (echo "ALEXANDRIA_PUBKEY repo variable is empty" && exit 1)
+      - name: Webview deps
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libgtk-3-dev
+      - name: Build llama.cpp (pinned)
+        run: ./scripts/build-llama.sh linux-x64 llama
+      - name: Build
+        env:
+          ALEXANDRIA_PUBKEY: ${{ vars.ALEXANDRIA_PUBKEY }}
+        run: cargo build --release -p alexandria-app -p alexandria-cli
+      - name: Assemble
+        run: |
+          mkdir -p dist/alexandria
+          cp target/release/alexandria-app dist/alexandria/
+          cp target/release/alex dist/alexandria/
+          cp crates/app/icons/icon.png dist/alexandria/
+          cp llama/llama-completion dist/alexandria/
+          cp -P llama/*.so* dist/alexandria/
+          tar -C dist -czf dist/alexandria-linux-x64.tar.gz alexandria
+      - name: Smoke test
+        run: dist/alexandria/llama-completion --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alexandria-linux
+          path: dist/alexandria-linux-x64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require the pinned release key
+        shell: bash
+        run: test -n "${{ vars.ALEXANDRIA_PUBKEY }}" || (echo "ALEXANDRIA_PUBKEY repo variable is empty" && exit 1)
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build llama.cpp (pinned)
+        shell: bash
+        run: ./scripts/build-llama.sh windows-x64 llama
+      - name: Build
+        env:
+          ALEXANDRIA_PUBKEY: ${{ vars.ALEXANDRIA_PUBKEY }}
+        run: cargo build --release -p alexandria-app -p alexandria-cli
+      - name: Assemble
+        shell: bash
+        run: |
+          mkdir -p dist/alexandria
+          cp target/release/alexandria-app.exe dist/alexandria/
+          cp target/release/alex.exe dist/alexandria/
+          cp llama/llama-completion.exe llama/*.dll dist/alexandria/
+          cd dist && 7z a alexandria-windows-x64.zip alexandria
+      - name: Smoke test
+        shell: bash
+        run: dist/alexandria/llama-completion.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alexandria-windows-x64
+          path: dist/alexandria-windows-x64.zip
+          if-no-files-found: error
+
+  windows-arm64:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require the pinned release key
+        shell: bash
+        run: test -n "${{ vars.ALEXANDRIA_PUBKEY }}" || (echo "ALEXANDRIA_PUBKEY repo variable is empty" && exit 1)
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Build llama.cpp (pinned)
+        shell: bash
+        run: ./scripts/build-llama.sh windows-arm64 llama
+      - name: Build
+        env:
+          ALEXANDRIA_PUBKEY: ${{ vars.ALEXANDRIA_PUBKEY }}
+        run: cargo build --release -p alexandria-app -p alexandria-cli
+      - name: Assemble
+        shell: bash
+        run: |
+          mkdir -p dist/alexandria
+          cp target/release/alexandria-app.exe dist/alexandria/
+          cp target/release/alex.exe dist/alexandria/
+          cp llama/llama-completion.exe llama/*.dll dist/alexandria/
+          cd dist && 7z a alexandria-windows-arm64.zip alexandria
+      - name: Smoke test
+        shell: bash
+        run: dist/alexandria/llama-completion.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alexandria-windows-arm64
+          path: dist/alexandria-windows-arm64.zip
+          if-no-files-found: error
+
+  release:
+    needs: [macos, linux, windows, windows-arm64]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DMG="$(find artifacts -name 'Alexandria-*.dmg' -print -quit)"
+          MAC_TGZ="$(find artifacts -name 'Alexandria-macos.tar.gz' -print -quit)"
+          LINUX="$(find artifacts -name 'alexandria-linux-x64.tar.gz' -print -quit)"
+          WIN_X64="$(find artifacts -name 'alexandria-windows-x64.zip' -print -quit)"
+          WIN_ARM64="$(find artifacts -name 'alexandria-windows-arm64.zip' -print -quit)"
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "$DMG" "$MAC_TGZ" "$LINUX" "$WIN_X64" "$WIN_ARM64"

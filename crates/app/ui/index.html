@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Alexandria</title>
+<link rel="stylesheet" href="maplibre-gl.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><pre id="art"></pre></div>
+
+<nav class="rail" aria-label="Sections">
+  <div class="drag" data-tauri-drag-region></div>
+  <button data-tab="home" class="on"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 9.5L10 3l7 6.5V17H12.5v-5h-5v5H3z"/></svg><span>Home</span></button>
+  <button data-tab="browse"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 5h10M7 10h10M7 15h10"/><circle cx="3.5" cy="5" r=".6"/><circle cx="3.5" cy="10" r=".6"/><circle cx="3.5" cy="15" r=".6"/></svg><span>All articles</span></button>
+  <button data-tab="map"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 18s-5.5-5.2-5.5-9.5a5.5 5.5 0 0 1 11 0C15.5 12.8 10 18 10 18z"/><circle cx="10" cy="8.5" r="2"/></svg><span>Map</span></button>
+  <button data-tab="translate"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M2.5 10h15M10 2.5c2.2 2.4 2.2 12.6 0 15M10 2.5c-2.2 2.4-2.2 12.6 0 15"/></svg><span>Translate</span></button>
+  <button data-tab="files"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 6.5V15a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5V8a1.5 1.5 0 0 0-1.5-1.5H10L8.3 4H4A1.5 1.5 0 0 0 2.5 5.5z"/></svg><span>My files</span></button>
+  <div class="grow"></div>
+  <button id="status" aria-haspopup="dialog"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2l6 2.5v4.6c0 4-2.6 7.2-6 8.9-3.4-1.7-6-4.9-6-8.9V4.5z"/><path id="statusmark" d="M7 10l2 2 4-4"/></svg><span id="statuslabel">Opening…</span></button>
+</nav>
+
+<main>
+  <section id="tab-home" class="tab">
+    <div id="home" class="col">
+      <form id="searchform" class="bigsearch" role="search">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>
+        <input id="q" placeholder="Search or ask anything" autocomplete="off" spellcheck="false" aria-label="Search or ask anything" autofocus>
+        <button class="primary" type="submit">Search</button>
+      </form>
+      <div id="chips" class="chips"></div>
+      <div id="answer" class="answer off">
+        <h3>Short answer</h3>
+        <div id="answertext" aria-live="polite"></div>
+        <div id="sources" class="sources"></div>
+        <small>Written on this computer from the articles it lists. Check them for anything important.</small>
+      </div>
+      <p id="count" class="count off" aria-live="polite"></p>
+      <ul id="results" class="results" aria-label="Results"></ul>
+    </div>
+
+    <div id="reader" class="reader off">
+      <div class="readerbar">
+        <button id="back" class="pill backbtn"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 4l-6 6 6 6"/></svg><span>Back</span></button>
+        <div class="readertitle">
+          <h2 id="title"></h2>
+          <div id="path" class="muted"></div>
+        </div>
+        <div class="readertools">
+          <span class="toollabel">Text size</span>
+          <button id="smaller" class="pill" aria-label="Smaller text">A−</button>
+          <button id="larger" class="pill" aria-label="Larger text">A+</button>
+          <button id="totranslate" class="pill">Translate</button>
+          <button id="toask" class="pill">Ask about this</button>
+        </div>
+      </div>
+      <iframe id="body" title="Article" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+    </div>
+  </section>
+
+  <section id="tab-browse" class="tab off">
+    <div class="pane">
+      <div class="panehead">
+        <h2>All articles</h2>
+        <p class="muted">Everything in one collection, A to Z.</p>
+      </div>
+      <div class="row">
+        <select id="pack" class="field narrow" aria-label="Collection"></select>
+        <input id="browsefilter" class="field" placeholder="Filter by title" autocomplete="off" aria-label="Filter by title">
+        <select id="browsesort" class="field narrow" aria-label="Sort"><option value="az">A → Z</option><option value="za">Z → A</option></select>
+      </div>
+      <div id="browsemeta" class="muted small"></div>
+      <ul id="browslist"></ul>
+      <div class="row">
+        <button id="browseprev" class="pill">Previous</button>
+        <button id="browsenext" class="pill">Next</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-map" class="tab off">
+    <div id="map">
+      <div id="mapstatus"></div>
+      <div id="mapsearchwrap">
+        <input id="mapsearch" placeholder="Find a place or street" autocomplete="off" aria-label="Find a place or street">
+        <div id="mapresults"></div>
+        <select id="mapselect" title="Map" aria-label="Map"></select>
+      </div>
+    </div>
+    <div id="mapmeta"></div>
+  </section>
+
+  <section id="tab-translate" class="tab off">
+    <div class="pane widepane">
+      <div class="panehead">
+        <h2>Translate</h2>
+      </div>
+      <div class="translategrid">
+        <div class="tbox">
+          <div class="tlabel">Detected automatically</div>
+          <textarea id="tin" placeholder="Type or paste text…" spellcheck="false" aria-label="Text to translate"></textarea>
+        </div>
+        <div class="tbox">
+          <div class="tlabel">
+            <select id="tlang" aria-label="Translate into"></select>
+            <span id="tstatus" class="muted small"></span>
+          </div>
+          <div id="tout" aria-live="polite"></div>
+        </div>
+      </div>
+      <p class="muted small">Machine translation can be wrong. Double-check names, numbers and medical details.</p>
+    </div>
+  </section>
+
+  <section id="tab-files" class="tab off">
+    <div class="pane widepane">
+      <div class="panehead split">
+        <div>
+          <h2>My files</h2>
+          <p class="muted">Your photos and documents, kept beside the library. Not signed or checked.</p>
+        </div>
+        <label class="primary upload">Add files<input id="personalfiles" type="file" multiple hidden></label>
+      </div>
+      <div id="personalgrid"></div>
+      <div id="personalview"></div>
+    </div>
+  </section>
+</main>
+
+<div id="sheet" class="sheet off" role="dialog" aria-modal="true" aria-labelledby="sheettitle">
+  <div class="card">
+    <h3 id="sheettitle">Sources verified</h3>
+    <div id="sheetbody"></div>
+    <p id="sheetmeta" class="muted small"></p>
+    <select id="library" class="field off" aria-label="Library location"></select>
+    <button id="sheetok" class="primary">Got it</button>
+  </div>
+</div>
+
+<script src="maplibre-gl.js"></script>
+<script src="map.js"></script>
+<script src="app.js"></script>
+<script src="features.js"></script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+zimgit-water_en_2024-08.zim 20924451 392c7bc970a44fddd61dd17f6eabf1f4e21936f2d5c27c83093e1dc475cb56b6 https://download.kiwix.org/zim/other/zimgit-water_en_2024-08.zim
+lfm3-1.7b-q4_0.gguf 1049615680 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452 https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf/LFM3-1.7B-QAD-Q4_0.gguf
+world.pmtiles 15040686 1839df1db934a49268f89b4461a011f5aa2af301d9c47d45a6ccbdfd29446010 https://github.com/itsthemoon/alexandria/releases/download/library-data/world.pmtiles

@@ -1,0 +1,5 @@
+tests/fixture-library/** -text
+library/*.txt text eol=lf
+*.sh text eol=lf
+library/KEYS -text
+library/KEYS.sig -text

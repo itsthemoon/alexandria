@@ -1,0 +1,43 @@
+name: library
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the library files to (e.g. v0.1.0)
+        required: true
+
+jobs:
+  lite:
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Make room (the library is ~8 GB)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h .
+      - name: Build the CLI
+        run: cargo build --release -p alexandria-cli
+      - name: Download pinned files and write MANIFEST
+        run: ALEX=target/release/alex scripts/build-library.sh library/lite.txt "$RUNNER_TEMP/lib" "${{ inputs.tag }}" "$(date -u +%F)"
+      - name: Sign with the release key
+        env:
+          RELEASE_SEED: ${{ secrets.ALEXANDRIA_RELEASE_SEED }}
+        run: |
+          test -n "$RELEASE_SEED" || { echo "ALEXANDRIA_RELEASE_SEED secret is missing"; exit 1; }
+          umask 077
+          printf '%s' "$RELEASE_SEED" > "$RUNNER_TEMP/seed"
+          target/release/alex sign "$RUNNER_TEMP/lib" "$RUNNER_TEMP/seed"
+          rm -f "$RUNNER_TEMP/seed"
+          cp library/KEYS library/KEYS.sig "$RUNNER_TEMP/lib/"
+      - name: Verify exactly as users will
+        run: target/release/alex verify "$RUNNER_TEMP/lib" "${{ vars.ALEXANDRIA_PUBKEY }}"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          base="https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}"
+          scripts/release-files.sh "$RUNNER_TEMP/lib" library/lite.txt lite "$base" "$RUNNER_TEMP/out"
+          gh release upload "${{ inputs.tag }}" "$RUNNER_TEMP"/out/* --clobber
