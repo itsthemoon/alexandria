@@ -14,7 +14,7 @@ say()  { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 ask() {
   local a=""
-  if [ -r /dev/tty ] && [ -z "${ALEXANDRIA_DIR:-}" ]; then
+  if [ -t 0 ] && [ -r /dev/tty ] && [ -z "${ALEXANDRIA_DIR:-}" ]; then
     printf '%s [%s]: ' "$1" "$2" > /dev/tty
     read -r a < /dev/tty || true
   fi

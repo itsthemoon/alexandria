@@ -58,7 +58,8 @@ try {
   $need = ($files | Measure-Object Bytes -Sum).Sum
 
   $default = if ($env:ALEXANDRIA_DIR) { $env:ALEXANDRIA_DIR } else { $env:USERPROFILE }
-  $parent = if ($env:ALEXANDRIA_DIR) { $default } else { Read-Host "Where should the library go? (an 'Alexandria' folder is made there) [$default]" }
+  $asked = if ($env:ALEXANDRIA_DIR -or -not [Environment]::UserInteractive) { $null } else { Read-Host "Where should the library go? (an 'Alexandria' folder is made there) [$default]" }
+  $parent = if ($asked) { $asked } else { $default }
   if (-not $parent) { $parent = $default }
   if (-not (Test-Path $parent -PathType Container)) { Fail "$parent does not exist." }
   $Lib = Join-Path $parent 'Alexandria'
