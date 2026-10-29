@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=${ALEXANDRIA_VERSION:-v0.1.0}
+VERSION=v0.1.0
 REPO=itsthemoon/alexandria
 EDITION=lite
 ROOT_KEY=afcbc7a3ff47fac00ed3bcca1b2459d2a6a03053f9a0ed7bb572997af69d2f4a
 BASE=${ALEXANDRIA_BASE:-https://github.com/$REPO/releases/download/$VERSION}
+MAC_SHA=5fc0bf8da3c537e1b45113d86ba792426ffd3c6d0e7bd58836c9e7420e1d63b4
+LINUX_SHA=85aeb5d4e07422ddf35ebab1dd7fb4b7b2d38b1ed376241b03d55c72d618d573
+HOSTS='https://github.com/itsthemoon/alexandria/releases/download/ https://download.kiwix.org/zim/ https://huggingface.co/LiquidAI/'
 
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31mError:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -22,6 +25,9 @@ size() { wc -c < "$1" | tr -d ' '; }
 free_bytes() { df -Pk "$1" | awk 'NR==2 {print $4 * 1024}'; }
 PROTO="=https"; [ -n "${ALEXANDRIA_BASE:-}" ] && PROTO="=https,file"
 get() { curl -fL --proto "$PROTO" --retry 5 --retry-delay 3 --progress-bar "$@"; }
+pinned() { [ -n "${ALEXANDRIA_BASE:-}" ] || [ "$(sha "$1")" = "$2" ] || fail "The app download does not match the checksum in this installer. Nothing was installed."; }
+
+main() {
 
 command -v curl >/dev/null || fail "curl is required."
 TMP=$(mktemp -d)
@@ -31,6 +37,7 @@ case "$(uname -s)-$(uname -m)" in
   Darwin-*)
     say "Installing Alexandria for Mac..."
     get -o "$TMP/app.tar.gz" "$BASE/Alexandria-macos.tar.gz"
+    pinned "$TMP/app.tar.gz" "$MAC_SHA"
     mkdir -p "$HOME/Applications"
     rm -rf "$HOME/Applications/Alexandria.app"
     tar -xzf "$TMP/app.tar.gz" -C "$HOME/Applications"
@@ -41,6 +48,7 @@ case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)
     say "Installing Alexandria for Linux..."
     get -o "$TMP/app.tar.gz" "$BASE/alexandria-linux-x64.tar.gz"
+    pinned "$TMP/app.tar.gz" "$LINUX_SHA"
     DEST="$HOME/.local/share/alexandria-app"
     rm -rf "$DEST"; mkdir -p "$DEST" "$HOME/.local/bin" "$HOME/.local/share/applications"
     tar -xzf "$TMP/app.tar.gz" -C "$DEST" --strip-components=1
@@ -67,9 +75,10 @@ EOF
 esac
 
 get -s -o "$TMP/files.txt" "$BASE/$EDITION-FILES.txt"
-awk -v base="${ALEXANDRIA_BASE:-}" '
+awk -v base="${ALEXANDRIA_BASE:-}" -v hosts="$HOSTS" '
+  BEGIN { nh = split(hosts, h, " ") }
   { ok = ($1 ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) && ($1 !~ /\.\./) && ($2 ~ /^[0-9]+$/) && ($3 ~ /^[0-9a-f]{64}$/) && NF >= 4
-    for (i = 4; i <= NF; i++) if ($i !~ /^https:\/\// && (base == "" || index($i, base "/") != 1)) ok = 0
+    for (i = 4; i <= NF; i++) { good = (base != "" && index($i, base "/") == 1); for (k = 1; k <= nh; k++) if (index($i, h[k]) == 1) good = 1; if (!good) ok = 0 }
     if (!ok) { print "bad line " NR ": " $0 > "/dev/stderr"; bad = 1 } }
   END { exit bad }' "$TMP/files.txt" || fail "The file list from the release is malformed. Nothing was written."
 need=$(awk '{s += $2} END {print s}' "$TMP/files.txt")
@@ -128,3 +137,6 @@ mkdir -p "$CONF" && printf '%s\n' "$LIB" > "$CONF/library-path"
 say "Done. Alexandria is installed and works offline from now on."
 echo "Open it:  $OPEN"
 echo "Library:  $LIB"
+}
+
+main "$@"

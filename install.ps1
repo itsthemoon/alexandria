@@ -1,17 +1,24 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = if ($env:ALEXANDRIA_VERSION) { $env:ALEXANDRIA_VERSION } else { 'v0.1.0' }
+$Version = 'v0.1.0'
 $Repo = 'itsthemoon/alexandria'
 $Edition = 'lite'
 $RootKey = 'afcbc7a3ff47fac00ed3bcca1b2459d2a6a03053f9a0ed7bb572997af69d2f4a'
 $Base = if ($env:ALEXANDRIA_BASE) { $env:ALEXANDRIA_BASE } else { "https://github.com/$Repo/releases/download/$Version" }
 
+$AppSha = @{
+  x64 = '880a198cb83890df38a7d37770e70b0cdac496fdca4174ecfc730fc73dc61f52'
+  arm64 = '62bd603fd346eab75adaea20923a2db8cd2c0230ca456144d0e6427fbd7aee3e'
+}
+$Hosts = @('https://github.com/itsthemoon/alexandria/releases/download/', 'https://download.kiwix.org/zim/', 'https://huggingface.co/LiquidAI/')
+$Proto = if ($env:ALEXANDRIA_BASE) { '=https,file' } else { '=https' }
+
 function Say($m) { Write-Host $m -ForegroundColor Cyan }
 function Fail($m) { Write-Host "Error: $m" -ForegroundColor Red; exit 1 }
 function Gb($b) { '{0:N1} GB' -f ($b / 1e9) }
 function Get-File($url, $out, [switch]$Resume) {
-  $a = @('-fL', '--retry', '5', '--retry-delay', '3', '--progress-bar', '-o', $out)
+  $a = @('-fL', '--proto', $Proto, '--retry', '5', '--retry-delay', '3', '--progress-bar', '-o', $out)
   if ($Resume) { $a += @('-C', '-') }
   & curl.exe @a $url
   if ($LASTEXITCODE -ne 0) { Fail "Download failed: $url. Run the installer again to resume." }
@@ -26,6 +33,7 @@ try {
   $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
   Say "Installing Alexandria for Windows ($arch)..."
   Get-File "$Base/alexandria-windows-$arch.zip" "$Tmp\app.zip"
+  if (-not $env:ALEXANDRIA_BASE -and (Sha "$Tmp\app.zip") -ne $AppSha[$arch]) { Fail 'The app download does not match the checksum in this installer. Nothing was installed.' }
   $AppDir = Join-Path $env:LOCALAPPDATA 'Programs\Alexandria'
   if (Test-Path $AppDir) { Remove-Item -Recurse -Force $AppDir }
   Expand-Archive -Path "$Tmp\app.zip" -DestinationPath "$Tmp\app"
@@ -40,7 +48,7 @@ try {
   $files = Get-Content "$Tmp\files.txt" | Where-Object { $_.Trim() } | ForEach-Object {
     $p = $_.Trim() -split '\s+'
     $urlsOk = $p.Count -ge 4 -and -not ($p[3..($p.Count - 1)] | Where-Object {
-      -not ($_.StartsWith('https://') -or ($env:ALEXANDRIA_BASE -and $_.StartsWith("$($env:ALEXANDRIA_BASE)/"))) })
+      $u = $_; -not (($Hosts | Where-Object { $u.StartsWith($_) }) -or ($env:ALEXANDRIA_BASE -and $u.StartsWith("$($env:ALEXANDRIA_BASE)/"))) })
     if (-not ($p[0] -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -and $p[0] -notmatch '\.\.' -and
               $p[1] -match '^[0-9]+$' -and $p[2] -cmatch '^[0-9a-f]{64}$' -and $urlsOk)) {
       Fail "The file list from the release is malformed (line: $_). Nothing was written."
