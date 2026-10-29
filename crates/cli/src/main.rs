@@ -281,7 +281,7 @@ fn index_cmd(zim_path: &str, out_path: &str, lead: Option<usize>) -> alexandria_
     let size = f.metadata()?.len();
     let mut z = Zim::open(RawFile(f, size)).map_err(zim_err)?;
     let ocr = ocr_beside(Path::new(zim_path));
-    let (n, total) = build_index(&mut z, Path::new(out_path), lead, ocr.as_ref())?;
+    let (n, total) = build_index(&mut z, Path::new(out_path), lead, ocr.as_ref(), size)?;
     println!("indexed {n} articles from {total} entries -> {out_path}");
     Ok(())
 }
@@ -300,9 +300,10 @@ fn index_library_cmd(dir: &str, pub_hex: &str) -> alexandria_core::Result<()> {
         fs::create_dir_all(out.parent().unwrap_or(dir))?;
         let part = out.with_extension("db.part");
         let vf = VerifiedFile::open_in(dir, e, m.chunk)?;
+        let pack_bytes = vf.size();
         let mut z = Zim::open(vf).map_err(zim_err)?;
         let ocr = ocr_in(dir, &m, &e.path);
-        let (n, _) = build_index(&mut z, &part, None, ocr.as_ref())?;
+        let (n, _) = build_index(&mut z, &part, None, ocr.as_ref(), pack_bytes)?;
         fs::rename(&part, &out)?;
         println!("      {n} articles");
     }
@@ -315,21 +316,44 @@ fn build_index<S: Source>(
     out_path: &Path,
     lead: Option<usize>,
     ocr: Option<&alexandria_search::ocr::Ocr>,
+    pack_bytes: u64,
 ) -> alexandria_core::Result<(usize, usize)> {
-    let _ = std::fs::remove_file(out_path);
-    let conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY;
-        CREATE VIRTUAL TABLE articles USING fts5(title, body, url UNINDEXED,
-        tokenize='unicode61 remove_diacritics 2');",
-    )
-    .map_err(sqlite_err)?;
     let mut entries = z.scan_entries_up_to(80_000_000).map_err(zim_err)?;
     let total = entries.len();
     entries.sort_by_key(|e| (e.cluster, e.blob));
+    let mut conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
+    let done = conn
+        .query_row(
+            "SELECT seen, kept FROM progress WHERE total = ?1 AND bytes = ?2",
+            rusqlite::params![total as i64, pack_bytes as i64],
+            |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)),
+        )
+        .ok();
+    if done.is_none() {
+        drop(conn);
+        let _ = std::fs::remove_file(out_path);
+        conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
+    }
+    conn.execute_batch(
+        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY;
+        CREATE TABLE IF NOT EXISTS progress(seen INTEGER NOT NULL, kept INTEGER NOT NULL,
+        total INTEGER NOT NULL, bytes INTEGER NOT NULL);
+        CREATE VIRTUAL TABLE IF NOT EXISTS articles USING fts5(title, body, url UNINDEXED,
+        tokenize='unicode61 remove_diacritics 2');",
+    )
+    .map_err(sqlite_err)?;
+    let (mut seen, mut inserted) = done.unwrap_or((0, 0));
+    if seen > 0 {
+        eprintln!("      resuming after {inserted} of about {total} entries");
+    }
+    #[cfg(debug_assertions)]
+    let stop_after: Option<usize> = std::env::var("ALEX_INDEX_STOP_AFTER")
+        .ok()
+        .and_then(|v| v.parse().ok());
+    #[cfg(not(debug_assertions))]
+    let stop_after: Option<usize> = None;
     let mut tx = conn.unchecked_transaction().map_err(sqlite_err)?;
-    let mut inserted = 0usize;
-    for e in entries.iter() {
+    for (i, e) in entries.iter().enumerate().skip(seen) {
         if e.mime == 0xFFFF || e.mime >= 0xFFFD || e.title.is_empty() {
             continue;
         }
@@ -362,12 +386,23 @@ fn build_index<S: Source>(
         )
         .map_err(sqlite_err)?;
         inserted += 1;
-        if inserted % 1000 == 0 {
+        seen = i + 1;
+        let stop = stop_after.map(|n| inserted >= n).unwrap_or(false);
+        if inserted % 1000 == 0 || stop {
+            tx.execute(
+                "INSERT OR REPLACE INTO progress(seen, kept, total, bytes) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![seen as i64, inserted as i64, total as i64, pack_bytes as i64],
+            )
+            .map_err(sqlite_err)?;
             tx.commit().map_err(sqlite_err)?;
+            if stop {
+                return Err(alexandria_core::Error::NotAFile("stopped for test".into()));
+            }
             eprintln!("      indexed {inserted}/{total}");
             tx = conn.unchecked_transaction().map_err(sqlite_err)?;
         }
     }
+    tx.execute("DELETE FROM progress", []).map_err(sqlite_err)?;
     tx.commit().map_err(sqlite_err)?;
     conn.execute_batch("INSERT INTO articles(articles) VALUES('optimize'); VACUUM;")
         .map_err(sqlite_err)?;

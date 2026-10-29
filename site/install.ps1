@@ -71,7 +71,7 @@ try {
     if ((Test-Path $p) -and (Get-Item $p).Length -eq $f.Bytes) { $have += $f.Bytes }
   }
   $todo = $need - $have
-  $index = [int64]($need * 0.5)
+  $index = [int64]($need * 0.25 + 2GB)
   $drive = (Get-Item $Lib).PSDrive
   $free = (Get-PSDrive $drive.Name).Free
   Say "Library: $(Gb $need) total, $(Gb $todo) to download, plus about $(Gb $index) for search. $(Gb $free) free on $($drive.Name):"
