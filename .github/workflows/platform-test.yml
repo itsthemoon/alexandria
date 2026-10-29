@@ -115,7 +115,8 @@ jobs:
             done
             xwininfo -root -tree | grep -i "alexandria" | tee windows.txt
             [ -n "$win" ] || { echo "no Alexandria window"; exit 1; }
-            import -window "$win" shot.png || import -window root shot.png
+            sleep 20
+            import -window root shot.png
             kill $pid'
 
       - name: Launch the app (Windows)
