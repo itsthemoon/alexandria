@@ -21,6 +21,9 @@ each item ships when it works and has been tested on every supported system.
 - **More tested translation languages.** A language is only offered after real sentences are
   checked both ways.
 - **Updated medical sources** where a newer free edition exists.
+- **Refuse older signed libraries.** A minimum release version built into the app, so an
+  older library or an older key list can't be put back on a drive.
+- **Show your own photos in the sandboxed reader,** not the main window.
 
 ## v0.2 — Full
 

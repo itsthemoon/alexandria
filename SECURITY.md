@@ -34,10 +34,12 @@ environment and opens no sockets. CI checks the socket part on Linux.
 
 ## What it does not protect against
 
-- **The first download.** The install command trusts GitHub, over HTTPS, to serve the real
-  app. The app then verifies the library, but nothing independent verifies the app itself.
-  Apps are not signed with paid Apple or Microsoft certificates. Like any `curl | bash`
-  installer, this only works if GitHub and the project's account are not compromised.
+- **The first download.** The install command checks the app download against a SHA-256
+  written into the install script, then the app verifies the library. Both the script and the
+  app come from the project's GitHub account, so this only works if GitHub and that account
+  are not compromised, like any `curl | bash` installer. Apps are not signed with paid Apple or
+  Microsoft certificates. If you download from the Releases page instead, compare the file's
+  SHA-256 with the one in `site/install.sh` or `site/install.ps1`.
 - **Malware on your computer.** A program running as you can change the app, or the files
   below, and can change what you see.
 - **Files made on your computer.** The search index (built during setup) is only used to find
@@ -50,6 +52,13 @@ environment and opens no sockets. CI checks the socket part on Linux.
   true.
 - **A stolen key.** A stolen release key can sign a bad library until the root key removes
   it from `KEYS`. A stolen root key is a full compromise.
+- **Older signed copies.** The app does not yet refuse an older `KEYS` or `MANIFEST` that was
+  validly signed. Someone who can write to the drive could put back an older library, or an
+  older `KEYS` that still lists a removed key. v0.1.0 is the first release, so no older copy
+  exists yet; a minimum release version will be built into the app before any key is removed.
+- **My files.** Files you add to `Alexandria-Personal` are not signed or checked. Photos there
+  are decoded by the system web view and PDFs open in your usual viewer, so a crafted file put
+  there by someone with access to the drive reaches that code.
 - **Bugs in third-party parsers.** llama.cpp parses the model file, pdf-extract parses PDF
   guides, and the system web view renders articles. They only ever see verified library files,
   but llama.cpp and the web view are memory-unsafe code outside this project.
