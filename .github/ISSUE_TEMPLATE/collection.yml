@@ -1,0 +1,25 @@
+name: New collection
+description: Suggest content for the library
+labels: [collection]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Collection
+      description: Name and a link to its page, for example a Kiwix archive
+    validations:
+      required: true
+  - type: input
+    id: license
+    attributes:
+      label: License
+      description: It must allow free redistribution
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it belongs
+      description: How it helps someone with no internet
+    validations:
+      required: true

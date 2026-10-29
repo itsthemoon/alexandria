@@ -1,0 +1,25 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: input
+    id: system
+    attributes:
+      label: Your computer
+      description: System and chip, for example "macOS 15, M1", "Windows 11 x64", "Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Alexandria version
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help. Please leave out personal information.
+    validations:
+      required: true

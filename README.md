@@ -154,7 +154,8 @@ scripts/e2e.sh <library> <root-key-hex>                        # end-to-end chec
 The pieces: `crates/core` (signatures and verified reads), `crates/zim` (offline archive
 reader), `crates/pmtiles` (map reader), `crates/search` (search index), `crates/cli`
 (`alex`, the publisher tool) and `crates/app` (the desktop app, built with Tauri).
-Security reports: see [SECURITY.md](SECURITY.md).
+Security reports: see [SECURITY.md](SECURITY.md). What's planned: [ROADMAP.md](ROADMAP.md).
+How to help: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licenses
 
