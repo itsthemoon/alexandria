@@ -95,7 +95,7 @@ while read -r name bytes _ _; do
   [ -f "$LIB/$name" ] && [ "$(size "$LIB/$name")" = "$bytes" ] && have=$((have + bytes))
 done < "$TMP/files.txt"
 todo=$((need - have))
-index=$((need / 2))
+index=$((need / 4 + 2000000000))
 free=$(free_bytes "$LIB")
 say "Library: $(gb "$need") total, $(gb "$todo") to download, plus about $(gb "$index") for search. $(gb "$free") free at $LIB"
 [ "$free" -gt $((todo + index + 200000000)) ] || fail "Not enough free space. Free up $(gb $((todo + index + 200000000 - free))) or pick another drive."
