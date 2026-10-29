@@ -1,4 +1,7 @@
-use alexandria_core::{hex, load_signing_key, open_signed, sign_bytes, sign_keys, Error};
+use alexandria_core::{
+    hex, load_signing_key, open_signed, open_signed_with, sign_bytes, sign_keys, Error, Manifest,
+    MIN_RELEASE_DATE,
+};
 use ed25519_dalek::SigningKey;
 use std::fs;
 use std::path::PathBuf;
@@ -155,5 +158,40 @@ fn symlinked_trust_files_are_refused_even_when_their_content_is_valid() {
         fs::remove_file(dir.join(name)).unwrap();
         symlink(good.join(name), dir.join(name)).unwrap();
         assert!(open_signed(&dir, &root.verifying_key()).is_err(), "{name} via symlink accepted");
+    }
+}
+
+#[test]
+fn a_library_older_than_the_floor_is_refused() {
+    let root = key(1);
+    let dir = library("old", &root, None);
+    assert!(matches!(
+        open_signed_with(&dir, &root.verifying_key(), "2026-11-01", &[]),
+        Err(Error::Outdated { .. })
+    ));
+    assert!(open_signed_with(&dir, &root.verifying_key(), "2026-10-27", &[]).is_ok());
+}
+
+#[test]
+fn a_removed_release_key_is_refused_even_when_an_old_keys_file_lists_it() {
+    let (root, release) = (key(1), key(2));
+    let dir = library("revoked", &release, Some((&keys_text(&[&release]), &root)));
+    let gone = hex(release.verifying_key().as_bytes());
+    assert!(matches!(
+        open_signed_with(&dir, &root.verifying_key(), MIN_RELEASE_DATE, &[gone.as_str()]),
+        Err(Error::BadSignature)
+    ));
+}
+
+#[test]
+fn the_shipped_floor_accepts_the_first_release() {
+    assert!(MIN_RELEASE_DATE <= "2026-10-27");
+}
+
+#[test]
+fn a_release_date_must_be_year_month_day() {
+    for bad in ["27-10-2026", "2026-1-27", "2026/10/27", "20261027xx", "2026-10-2a"] {
+        let text = format!("alexandria-manifest 1\nrelease v1 {bad}\nchunk 1048576\n");
+        assert!(Manifest::parse(&text).is_err(), "{bad} accepted");
     }
 }

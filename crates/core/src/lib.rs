@@ -33,6 +33,7 @@ pub enum Error {
     BadSignature,
     BadKey(String),
     NotAFile(String),
+    Outdated { date: String, min: String },
 }
 
 impl std::fmt::Display for Error {
@@ -60,6 +61,10 @@ impl std::fmt::Display for Error {
             Error::BadSignature => write!(f, "manifest signature is not valid"),
             Error::BadKey(k) => write!(f, "bad public key: {k}"),
             Error::NotAFile(p) => write!(f, "not a regular file: {p}"),
+            Error::Outdated { date, min } => write!(
+                f,
+                "this library ({date}) is older than this app accepts ({min}); run the install command to update it"
+            ),
         }
     }
 }
@@ -165,6 +170,14 @@ pub struct Manifest {
     pub entries: Vec<Entry>,
 }
 
+pub fn is_date(d: &str) -> bool {
+    let b = d.as_bytes();
+    b.len() == 10
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+}
+
 fn safe_path(p: &str) -> bool {
     if p.is_empty() || p.starts_with('/') || p.contains('\\') {
         return false;
@@ -213,7 +226,7 @@ impl Manifest {
             .next()
             .ok_or_else(|| Error::BadLine(rel.into()))?
             .to_string();
-        if rp.next().is_some() {
+        if rp.next().is_some() || !is_date(&date) {
             return Err(Error::BadLine(rel.into()));
         }
         let cl = lines.next().ok_or(Error::BadHeader)?.trim();
@@ -377,7 +390,19 @@ fn read_sig(path: &Path) -> Result<[u8; 64]> {
     Ok(sig)
 }
 
+pub const MIN_RELEASE_DATE: &str = "2026-10-27";
+pub const REVOKED_KEYS: &[&str] = &[];
+
 pub fn open_signed(dir: &Path, root: &VerifyingKey) -> Result<Signed> {
+    open_signed_with(dir, root, MIN_RELEASE_DATE, REVOKED_KEYS)
+}
+
+pub fn open_signed_with(
+    dir: &Path,
+    root: &VerifyingKey,
+    min_date: &str,
+    revoked: &[&str],
+) -> Result<Signed> {
     let raw = read_capped(&dir.join("MANIFEST"), 1 << 20)?;
     let sig = read_sig(&dir.join("MANIFEST.sig"))?;
     let mut trusted = vec![*root];
@@ -386,10 +411,17 @@ pub fn open_signed(dir: &Path, root: &VerifyingKey) -> Result<Signed> {
         let ksig = read_sig(&dir.join("KEYS.sig"))?;
         trusted.extend(verify_keys(root, &keys, &ksig)?);
     }
+    trusted.retain(|k| !revoked.contains(&hex(k.as_bytes()).as_str()));
     if !trusted.iter().any(|k| verify_bytes(k, &raw, &sig).is_ok()) {
         return Err(Error::BadSignature);
     }
     let manifest = Manifest::parse(&String::from_utf8_lossy(&raw))?;
+    if manifest.date.as_str() < min_date {
+        return Err(Error::Outdated {
+            date: manifest.date,
+            min: min_date.into(),
+        });
+    }
     Ok(Signed { raw, sig, manifest })
 }
 

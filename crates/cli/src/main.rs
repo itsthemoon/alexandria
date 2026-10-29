@@ -255,11 +255,33 @@ fn search_cmd(dir: &str, pub_hex: &str, q: &str) -> alexandria_core::Result<()> 
     Ok(())
 }
 
+fn ocr_beside(pack: &Path) -> Option<alexandria_search::ocr::Ocr> {
+    let mut name = pack.file_name()?.to_os_string();
+    name.push(".ocr");
+    std::fs::read(pack.with_file_name(name))
+        .ok()
+        .map(|b| alexandria_search::ocr::Ocr::parse(&b))
+        .filter(|o| !o.is_empty())
+}
+
+fn ocr_in(dir: &Path, m: &Manifest, pack: &str) -> Option<alexandria_search::ocr::Ocr> {
+    let path = format!("{pack}.ocr");
+    let entry = m.entries.iter().find(|e| e.path == path)?;
+    let mut vf = VerifiedFile::open_in(dir, entry, m.chunk).ok()?;
+    let size = vf.size() as usize;
+    if size > 64 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = vf.read_at(0, size).ok()?;
+    Some(alexandria_search::ocr::Ocr::parse(&bytes)).filter(|o| !o.is_empty())
+}
+
 fn index_cmd(zim_path: &str, out_path: &str, lead: Option<usize>) -> alexandria_core::Result<()> {
     let f = std::fs::File::open(zim_path)?;
     let size = f.metadata()?.len();
     let mut z = Zim::open(RawFile(f, size)).map_err(zim_err)?;
-    let (n, total) = build_index(&mut z, Path::new(out_path), lead)?;
+    let ocr = ocr_beside(Path::new(zim_path));
+    let (n, total) = build_index(&mut z, Path::new(out_path), lead, ocr.as_ref())?;
     println!("indexed {n} articles from {total} entries -> {out_path}");
     Ok(())
 }
@@ -279,7 +301,8 @@ fn index_library_cmd(dir: &str, pub_hex: &str) -> alexandria_core::Result<()> {
         let part = out.with_extension("db.part");
         let vf = VerifiedFile::open_in(dir, e, m.chunk)?;
         let mut z = Zim::open(vf).map_err(zim_err)?;
-        let (n, _) = build_index(&mut z, &part, None)?;
+        let ocr = ocr_in(dir, &m, &e.path);
+        let (n, _) = build_index(&mut z, &part, None, ocr.as_ref())?;
         fs::rename(&part, &out)?;
         println!("      {n} articles");
     }
@@ -291,6 +314,7 @@ fn build_index<S: Source>(
     z: &mut Zim<S>,
     out_path: &Path,
     lead: Option<usize>,
+    ocr: Option<&alexandria_search::ocr::Ocr>,
 ) -> alexandria_core::Result<(usize, usize)> {
     let _ = std::fs::remove_file(out_path);
     let conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
@@ -317,9 +341,12 @@ fn build_index<S: Source>(
         let (title, text) = match mime.as_str() {
             "text/html" => (e.title.clone(), html_to_text(&String::from_utf8_lossy(&raw))),
             "text/plain" => (e.title.clone(), String::from_utf8_lossy(&raw).to_string()),
-            _ => match alexandria_search::pdf_text(&raw) {
+            _ => match alexandria_search::pdf_text(&raw).filter(|(_, t)| t.split_whitespace().count() >= 20) {
                 Some((meta, text)) => (alexandria_search::pdf_title(meta.as_deref(), &text, &e.title), text),
-                None => continue,
+                None => match ocr.and_then(|o| o.text(&e.url)) {
+                    Some(text) => (alexandria_search::pdf_name(&e.title), text.to_string()),
+                    None => continue,
+                },
             },
         };
         if text.chars().filter(|c| c.is_alphanumeric()).count() < 20 {
@@ -501,8 +528,13 @@ fn ask_sources(d: &Path, m: &Manifest, question: &str) -> alexandria_core::Resul
         let pdf = z.mime(e.mime) == Some("application/pdf");
         let Ok(raw) = z.read_article(idx) else { continue };
         let (title, text) = if pdf {
-            let Some((meta, text)) = alexandria_search::pdf_text(&raw) else { continue };
-            (alexandria_search::pdf_title(meta.as_deref(), &text, &e.title), text)
+            match alexandria_search::pdf_text(&raw).filter(|(_, t)| t.split_whitespace().count() >= 20) {
+                Some((meta, text)) => (alexandria_search::pdf_title(meta.as_deref(), &text, &e.title), text),
+                None => match ocr_in(d, m, &pack).and_then(|o| o.text(&e.url).map(str::to_string)) {
+                    Some(text) => (alexandria_search::pdf_name(&e.title), text),
+                    None => continue,
+                },
+            }
         } else {
             (if e.title.is_empty() { e.url.clone() } else { e.title.clone() }, html_to_text(&String::from_utf8_lossy(&raw)))
         };

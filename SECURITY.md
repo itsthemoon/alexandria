@@ -13,6 +13,12 @@ SHA-256 hash for each 1 MiB piece. The app checks each piece against that list e
 reads it, so a corrupted, edited or swapped file is refused at the moment of use, not just at
 install. Symlinks are refused.
 
+**An older library put back.** Each app has a minimum release date and a list of removed
+release keys built in, and refuses libraries older than that date or signed only by a removed
+key, even if an old `KEYS` file still lists it. The app also remembers the newest library it
+has opened on this computer and refuses older ones, so a library can't be quietly swapped for an
+earlier signed copy. To use an older drive again, run the install command on it to update it.
+
 **A forged library.** The `MANIFEST` is signed with Ed25519. The app has one public key built
 in, the *root key*. A library is accepted when:
 
@@ -48,17 +54,18 @@ environment and opens no sockets. CI checks the socket part on Linux.
   say. The working copy of the AI model is checked against the signed hashes every time it is
   used; a program running as you could still swap it in the moment between that check and the
   AI reading it.
+- **Text read from a scan.** Scanned guides are read by text recognition when the library is
+  built, not by a person. That text is signed and checked like everything else, but a misread
+  word is possible; the page images themselves are not part of the library.
 - **Wrong content.** Verified means "exactly what the project published". It does not mean
   true.
 - **A stolen key.** A stolen release key can sign a bad library until the root key removes
   it from `KEYS`. A stolen root key is a full compromise.
-- **Older signed copies.** The app does not yet refuse an older `KEYS` or `MANIFEST` that was
-  validly signed. Someone who can write to the drive could put back an older library, or an
-  older `KEYS` that still lists a removed key. v0.1.0 is the first release, so no older copy
-  exists yet; a minimum release version will be built into the app before any key is removed.
-- **My files.** Files you add to `Alexandria-Personal` are not signed or checked. Photos there
-  are decoded by the system web view and PDFs open in your usual viewer, so a crafted file put
-  there by someone with access to the drive reaches that code.
+- **My files.** Files you add to `Alexandria-Personal` are not signed or checked. Photos are
+  decoded by the app's own memory-safe code, with size limits, and only a fresh copy it
+  re-encodes is shown, so the web view never decodes the original file. PDFs, text files and
+  photos the app can't read (such as HEIC) open in your usual viewer when you click them, so a
+  crafted file put there by someone with access to the drive reaches that viewer.
 - **Bugs in third-party parsers.** llama.cpp parses the model file, pdf-extract parses PDF
   guides, and the system web view renders articles. They only ever see verified library files,
   but llama.cpp and the web view are memory-unsafe code outside this project.

@@ -3,6 +3,14 @@
 What exists today, what comes next, and what Alexandria will not do. Dates are not promised;
 each item ships when it works and has been tested on every supported system.
 
+## v0.1.1 — Lite update (released)
+
+- Scanned survival guides (about 1 in 10 of them) are read by text recognition when the library
+  is built, and ship signed with it, so they can be searched, quoted by Ask, and read in the app.
+- The app refuses a library older than the one it already opened, and a signing key the project
+  has removed.
+- Photos in My files are decoded by the app's own code with size limits, never by the web view.
+
 ## v0.1.0 — Lite (released)
 
 - Desktop app for macOS, Windows (x64 and ARM) and Linux x64.
@@ -14,16 +22,11 @@ each item ships when it works and has been tested on every supported system.
 
 ## Next
 
-- **Text search inside scanned PDFs.** About 1 in 10 survival guides are scans; they show by
-  title only today. Adds on-device text recognition (OCR) during setup.
 - **Search by meaning, not just by words.** So a question finds the right article even when it
   uses different words than the article does.
 - **More tested translation languages.** A language is only offered after real sentences are
   checked both ways.
 - **Updated medical sources** where a newer free edition exists.
-- **Refuse older signed libraries.** A minimum release version built into the app, so an
-  older library or an older key list can't be put back on a drive.
-- **Show your own photos in the sandboxed reader,** not the main window.
 
 ## v0.2 — Full
 

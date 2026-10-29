@@ -18,3 +18,4 @@ zimgit-food-preparation_en_2025-04.zim 97822565 db92c6c9dac14ff30f1cbc15aa834a7c
 zimgit-medicine_en_2024-08.zim 70179585 a86c31b93e9800aae2cd812ef18cbf9c087a7537784c62fbc259db7f9f9d18c0 https://download.kiwix.org/zim/other/zimgit-medicine_en_2024-08.zim
 lfm3-1.7b-q4_0.gguf 1049615680 43a7d09a0e9cba91b63eb7052488b9564569bddfd65754d2e426465e572a7452 https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/b3f2ae5d73cd3c91bf40e8ba752c648aa05dffdf/LFM3-1.7B-QAD-Q4_0.gguf
 world.pmtiles 15040686 1839df1db934a49268f89b4461a011f5aa2af301d9c47d45a6ccbdfd29446010 https://github.com/itsthemoon/alexandria/releases/download/library-data/world.pmtiles
+zimgit-post-disaster_en_2024-05.zim.ocr 3021533 55077bdd7a74cd8149722ee6dc99cf1a515a7bdc4d1e2b79b104670600528d5d https://github.com/itsthemoon/alexandria/releases/download/library-data/post-disaster.ocr

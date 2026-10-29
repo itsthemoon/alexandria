@@ -3,7 +3,7 @@ use alexandria_pmtiles::{Pmtiles, TileType};
 use alexandria_zim::{article_html, html_to_text, search, Zim};
 use serde::Serialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 mod llm;
@@ -150,7 +150,25 @@ fn load_manifest() -> Result<(PathBuf, Manifest), String> {
     let dir = library_dir()?;
     let root = parse_verifying_key(&trust_key()?).map_err(|e| e.to_string())?;
     let signed = alexandria_core::open_signed(&dir, &root).map_err(|e| e.to_string())?;
+    newest_release(&alexandria_core::config_dir().join("newest-release"), &signed.manifest.date)?;
     Ok((dir, signed.manifest))
+}
+
+fn newest_release(note: &Path, date: &str) -> Result<(), String> {
+    let seen = fs::read_to_string(note).unwrap_or_default();
+    let seen = seen.trim();
+    if alexandria_core::is_date(seen) && date < seen {
+        return Err(format!(
+            "This library ({date}) is older than one this computer has already opened ({seen}). Run the install command to update it."
+        ));
+    }
+    if date != seen {
+        if let Some(dir) = note.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let _ = fs::write(note, date);
+    }
+    Ok(())
 }
 
 fn library_info_impl(path: Option<String>) -> Result<serde_json::Value, String> {
@@ -329,6 +347,18 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+fn ocr_for(dir: &Path, m: &Manifest, pack: &str) -> Option<alexandria_search::ocr::Ocr> {
+    let path = format!("{pack}.ocr");
+    let entry = m.entries.iter().find(|e| e.path == path)?;
+    let mut vf = VerifiedFile::open_in(dir, entry, m.chunk).ok()?;
+    let size = vf.size();
+    if size > 64 * 1024 * 1024 {
+        return None;
+    }
+    let bytes = vf.read_at(0, size as usize).ok()?;
+    Some(alexandria_search::ocr::Ocr::parse(&bytes)).filter(|o| !o.is_empty())
+}
+
 fn read_article_impl(url: String, pack: Option<String>) -> Result<Article, String> {
     let (dir, m) = load_manifest()?;
     let entry = zim_entry_for(&m, pack.as_deref())?;
@@ -342,9 +372,17 @@ fn read_article_impl(url: String, pack: Option<String>) -> Result<Article, Strin
     let mime = z.mime(hit.mime).unwrap_or("").to_string();
     if mime == "application/pdf" {
         let bytes = z.read_blob(hit.cluster, hit.blob).map_err(|e| e.to_string())?;
-        let (meta, text) = alexandria_search::pdf_text(&bytes)
-            .filter(|(_, t)| !t.trim().is_empty())
-            .ok_or("This PDF has no readable text (it may be a scan).")?;
+        let (meta, text) = match alexandria_search::pdf_text(&bytes)
+            .filter(|(_, t)| t.split_whitespace().count() >= 20)
+        {
+            Some(found) => found,
+            None => {
+                let text = ocr_for(&dir, &m, &entry.path)
+                    .and_then(|o| o.text(&hit.url).map(str::to_string))
+                    .ok_or("This PDF has no readable text (it may be a scan).")?;
+                (None, text)
+            }
+        };
         let title = alexandria_search::pdf_title(meta.as_deref(), &text, &hit.title);
         let html = text_page(Some(&title), &text);
         return Ok(Article { title, url: hit.url, text, html });
@@ -825,15 +863,33 @@ async fn personal_save(name: String, bytes: Vec<u8>) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+fn clean_image(bytes: &[u8], max: u32) -> Result<Vec<u8>, String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16384);
+    limits.max_image_height = Some(16384);
+    limits.max_alloc = Some(512 * 1024 * 1024);
+    reader.limits(limits);
+    let img = reader.decode().map_err(|_| "this photo can't be shown".to_string())?;
+    let img = if img.width() > max || img.height() > max { img.thumbnail(max, max) } else { img };
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.to_rgba8()
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
+}
+
 #[tauri::command]
-async fn personal_read(name: String) -> Result<Vec<u8>, String> {
+async fn personal_image(name: String, max: u32) -> Result<Vec<u8>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = personal_path(&name)?;
         let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
         if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 128 * 1024 * 1024 {
             return Err("file is too large to preview".into());
         }
-        fs::read(&path).map_err(|e| e.to_string())
+        clean_image(&fs::read(&path).map_err(|e| e.to_string())?, max.clamp(64, 4096))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1046,7 +1102,7 @@ fn main() {
             browse,
             personal_list,
             personal_save,
-            personal_read,
+            personal_image,
             personal_open,
             personal_reveal
         ])
@@ -1180,5 +1236,59 @@ mod pointer_tests {
         assert_eq!(library_from_pointer(&note), Some(lib.clone()));
         assert_eq!(library_from_pointer(&t.join("missing")), None);
         fs::remove_dir_all(&t).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod newest_tests {
+    use super::newest_release;
+    use std::fs;
+
+    #[test]
+    fn an_older_library_than_one_already_opened_is_refused() {
+        let t = std::env::temp_dir().join(format!("alex-newest-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        fs::create_dir_all(&t).unwrap();
+        let note = t.join("newest-release");
+        assert!(newest_release(&note, "2026-10-27").is_ok());
+        assert!(newest_release(&note, "2026-10-27").is_ok());
+        assert!(newest_release(&note, "2027-01-15").is_ok());
+        assert_eq!(fs::read_to_string(&note).unwrap(), "2027-01-15");
+        let e = newest_release(&note, "2026-10-27").unwrap_err();
+        assert!(e.contains("older"), "{e}");
+        assert_eq!(fs::read_to_string(&note).unwrap(), "2027-01-15");
+        fs::write(&note, "junk").unwrap();
+        assert!(newest_release(&note, "2026-10-27").is_ok());
+        fs::remove_dir_all(&t).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::clean_image;
+
+    fn encoded(w: u32, h: u32, fmt: image::ImageFormat) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([x as u8, y as u8, 90]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, fmt).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_photo_comes_back_as_a_fresh_png_no_larger_than_asked() {
+        let png = clean_image(&encoded(640, 480, image::ImageFormat::Jpeg), 320).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        let back = image::load_from_memory(&png).unwrap();
+        assert_eq!((back.width(), back.height()), (320, 240));
+        let small = clean_image(&encoded(100, 50, image::ImageFormat::Png), 320).unwrap();
+        assert_eq!(image::load_from_memory(&small).unwrap().width(), 100);
+    }
+
+    #[test]
+    fn garbage_and_huge_claims_are_refused() {
+        assert!(clean_image(b"not an image at all", 320).is_err());
+        let mut bomb = encoded(1, 1, image::ImageFormat::Png);
+        bomb[16..24].copy_from_slice(&[0, 1, 0x86, 0xa0, 0, 1, 0x86, 0xa0]);
+        assert!(clean_image(&bomb, 320).is_err());
     }
 }

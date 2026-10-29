@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 mod ask;
+pub mod ocr;
 mod vfs;
 
 pub use ask::{ask_candidates, best_passage, pick_sources, Pick};

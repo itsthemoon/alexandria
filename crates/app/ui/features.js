@@ -141,12 +141,6 @@ function toUint8(data) {
   return new Uint8Array(data);
 }
 
-function mimeFor(name) {
-  const ext = name.split('.').pop().toLowerCase();
-  return ext === 'png' ? 'image/png' : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
-    : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'application/octet-stream';
-}
-
 function fileSize(n) {
   if (n > 1e9) return (n / 1e9).toFixed(1) + ' GB';
   if (n > 1e6) return (n / 1e6).toFixed(1) + ' MB';
@@ -170,20 +164,20 @@ async function loadPersonal() {
       card.title = it.name;
       if (it.kind === 'image') {
         try {
-          const bytes = await invoke('personal_read', { name: it.name });
+          const bytes = await invoke('personal_image', { name: it.name, max: 480 });
           const img = el('img');
-          img.src = URL.createObjectURL(new Blob([toUint8(bytes)], { type: mimeFor(it.name) }));
+          img.src = URL.createObjectURL(new Blob([toUint8(bytes)], { type: 'image/png' }));
           img.alt = it.name;
           img.onerror = () => { img.remove(); card.classList.add('nopreview'); };
           card.appendChild(img);
-        } catch (_) { card.classList.add('nopreview'); }
+        } catch (_) { card.classList.add('nopreview'); it.kind = 'external'; }
       } else {
         card.appendChild(el('span', 'fileicon', it.kind === 'pdf' ? 'PDF' : it.kind === 'text' ? 'TXT' : 'FILE'));
       }
       card.append(el('span', 'filelabel', it.name), el('span', 'filesize', fileSize(it.size)));
       card.onclick = () => {
         if (it.kind === 'image') showImage(it.name);
-        else if (it.kind === 'pdf' || it.kind === 'text') {
+        else if (it.kind === 'pdf' || it.kind === 'text' || it.kind === 'external') {
           invoke('personal_open', { name: it.name }).catch(e => { $('personalview').textContent = String(e); });
         } else {
           invoke('personal_reveal', { name: it.name }).catch(e => { $('personalview').textContent = String(e); });
@@ -200,9 +194,9 @@ async function showImage(name) {
   const view = $('personalview');
   view.textContent = '';
   try {
-    const bytes = await invoke('personal_read', { name });
+    const bytes = await invoke('personal_image', { name, max: 2400 });
     const img = el('img', 'lightbox');
-    img.src = URL.createObjectURL(new Blob([toUint8(bytes)], { type: mimeFor(name) }));
+    img.src = URL.createObjectURL(new Blob([toUint8(bytes)], { type: 'image/png' }));
     img.alt = name;
     img.onclick = () => img.remove();
     view.appendChild(img);

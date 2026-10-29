@@ -7,7 +7,7 @@ all stored on your own computer or drive, and all working with **no internet at 
 Built for power cuts, travel, bad connections and emergencies. No account, no tracking,
 nothing sent anywhere.
 
-> **Preview release (v0.1.0).** It works, it is tested, and it has rough edges. Read
+> **Preview release (v0.1.1).** It works, it is tested, and it has rough edges. Read
 > [Known limits](#known-limits) before you rely on it for anything important.
 
 ## Install
@@ -126,8 +126,10 @@ when they are written, not every time they are read.
   we tested got them wrong.
 - **The Lite map stops at country and city level.** Street maps come with the Full edition.
   Map search finds places and street names, not house numbers.
-- **Scanned PDFs** in the survival guides (about 1 in 10) show by title only; their text
-  can't be searched yet.
+- **Text read from scans.** About 1 in 10 of the survival guides are scanned images with no
+  text inside. Their text is read by recognition when the library is built, and ships signed
+  with it, so they can be searched and read like the rest. Recognition is good but not perfect:
+  expect an occasional misread word, and check the page image for numbers or doses.
 - **Unsigned builds:** see the warnings above. Apple and Microsoft certificates cost money
   every year; the project may add them later.
 - **Tested on:** macOS on Apple Silicon (and the Intel build under Rosetta), Windows x64,
