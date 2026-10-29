@@ -156,6 +156,7 @@ jobs:
           WIN_X64="$(find artifacts -name 'alexandria-windows-x64.zip' -print -quit)"
           WIN_ARM64="$(find artifacts -name 'alexandria-windows-arm64.zip' -print -quit)"
           gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --draft \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
