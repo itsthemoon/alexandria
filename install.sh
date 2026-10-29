@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION=v0.1.0
+VERSION=v0.1.1
 REPO=itsthemoon/alexandria
 EDITION=lite
 ROOT_KEY=afcbc7a3ff47fac00ed3bcca1b2459d2a6a03053f9a0ed7bb572997af69d2f4a
 BASE=${ALEXANDRIA_BASE:-https://github.com/$REPO/releases/download/$VERSION}
-MAC_SHA=5fc0bf8da3c537e1b45113d86ba792426ffd3c6d0e7bd58836c9e7420e1d63b4
-LINUX_SHA=85aeb5d4e07422ddf35ebab1dd7fb4b7b2d38b1ed376241b03d55c72d618d573
+MAC_SHA=3d6a1342c4eeaf9f2575cd8586b27a63fb1921b204ae93d188d48a190ec38d1a
+LINUX_SHA=c206a32f8e3b6ad78943fffdb8e6c2803ee8aeec98d0a2e280e0bfa7567e7dee
 HOSTS='https://github.com/itsthemoon/alexandria/releases/download/ https://download.kiwix.org/zim/ https://huggingface.co/LiquidAI/'
 
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }

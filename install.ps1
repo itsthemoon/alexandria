@@ -1,15 +1,15 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Version = 'v0.1.0'
+$Version = 'v0.1.1'
 $Repo = 'itsthemoon/alexandria'
 $Edition = 'lite'
 $RootKey = 'afcbc7a3ff47fac00ed3bcca1b2459d2a6a03053f9a0ed7bb572997af69d2f4a'
 $Base = if ($env:ALEXANDRIA_BASE) { $env:ALEXANDRIA_BASE } else { "https://github.com/$Repo/releases/download/$Version" }
 
 $AppSha = @{
-  x64 = '880a198cb83890df38a7d37770e70b0cdac496fdca4174ecfc730fc73dc61f52'
-  arm64 = '62bd603fd346eab75adaea20923a2db8cd2c0230ca456144d0e6427fbd7aee3e'
+  x64 = 'd5e3467d50d7986d99b0802539ae3d59244ac77a2279831a8485f282ced66f07'
+  arm64 = 'a7dba384d0f83b2f130f9f03a8856ffb69f37978d509546b80bb0407d659898d'
 }
 $Hosts = @('https://github.com/itsthemoon/alexandria/releases/download/', 'https://download.kiwix.org/zim/', 'https://huggingface.co/LiquidAI/')
 $Proto = if ($env:ALEXANDRIA_BASE) { '=https,file' } else { '=https' }
