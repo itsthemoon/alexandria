@@ -24,7 +24,9 @@ jobs:
       - name: List the files to hash
         id: list
         run: |
-          names=$(grep -vE '^\s*(#|$)' library/full.txt | awk '{print $1}' | jq -R -s -c 'split("\n")[:-1]')
+          names=$(grep -vE '^\s*(#|$)' library/full.txt | awk '{print $1}')
+          printf '%s\n' "$names" | grep -Eq '[^A-Za-z0-9._-]' && { echo "unsafe file name in library/full.txt" >&2; exit 1; }
+          names=$(printf '%s\n' "$names" | jq -R -s -c 'split("\n")[:-1]')
           echo "names=$names" >> "$GITHUB_OUTPUT"
 
   hash:

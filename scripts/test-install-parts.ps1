@@ -31,5 +31,25 @@ if ((Get-FileHash "$T\dest\Alexandria\big.bin" -Algorithm SHA256).Hash.ToLower()
 $env:ALEXANDRIA_EDITION = 'bogus'
 $bad = powershell -NoProfile -ExecutionPolicy Bypass -File $script 2>&1 | Out-String
 if ($LASTEXITCODE -eq 0 -or $bad -notmatch 'must be lite or full') { throw "bad edition accepted: $bad" }
+
+$env:ALEXANDRIA_EDITION = 'full'
+$T2 = Join-Path $env:TEMP ("inst2-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Force "$T2\R", "$T2\dest" | Out-Null
+$base2 = 'file:///' + ($T2 -replace '\\', '/') + '/R'
+"huge.bin 99999999999999999999 0000000000000000000000000000000000000000000000000000000000000000 $base2/huge.bin" | Set-Content "$T2\R\full-FILES.txt"
+$env:ALEXANDRIA_BASE = $base2; $env:ALEXANDRIA_DIR = "$T2\dest"
+$big2 = powershell -NoProfile -ExecutionPolicy Bypass -File $script 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -or $big2 -notmatch 'malformed') { throw "an oversized byte count was accepted: $big2" }
+
+$env:ALEXANDRIA_BASE = $base; $env:ALEXANDRIA_DIR = "$T\dest"
+"big.bin 2500001 $sha $base/big.bin.part00 $base/big.bin.part01 $base/big.bin.part02" | Set-Content "$T\R\full-FILES.txt"
+Remove-Item "$T\dest\Alexandria\big.bin" -ErrorAction SilentlyContinue
+$wrong = powershell -NoProfile -ExecutionPolicy Bypass -File $script 2>&1 | Out-String
+if ($LASTEXITCODE -eq 0 -or $wrong -notmatch 'wrong size') { throw "a wrong declared size must fail: $wrong" }
+if ((Test-Path "$T\dest\Alexandria\big.bin.part") -or (Test-Path "$T\dest\Alexandria\big.bin.done")) { throw 'a stale part survived a size failure' }
+"big.bin 2500000 $sha $base/big.bin.part00 $base/big.bin.part01 $base/big.bin.part02" | Set-Content "$T\R\full-FILES.txt"
+$again = powershell -NoProfile -ExecutionPolicy Bypass -File $script 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { throw "rerun after a size failure failed: $again" }
+if ((Get-FileHash "$T\dest\Alexandria\big.bin" -Algorithm SHA256).Hash.ToLower() -ne $sha) { throw 'rerun after a size failure produced wrong bytes' }
 Write-Host 'installer resumes multi-part downloads: ok'
 exit 0

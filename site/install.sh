@@ -6,8 +6,8 @@ REPO=itsthemoon/alexandria
 EDITION=${ALEXANDRIA_EDITION:-lite}
 ROOT_KEY=afcbc7a3ff47fac00ed3bcca1b2459d2a6a03053f9a0ed7bb572997af69d2f4a
 BASE=${ALEXANDRIA_BASE:-https://github.com/$REPO/releases/download/$VERSION}
-MAC_SHA=3d6a1342c4eeaf9f2575cd8586b27a63fb1921b204ae93d188d48a190ec38d1a
-LINUX_SHA=c206a32f8e3b6ad78943fffdb8e6c2803ee8aeec98d0a2e280e0bfa7567e7dee
+MAC_SHA=6120d7e9963081b41154ae7c2397856e04d932a432f7565b6ab3ddef87d70f21
+LINUX_SHA=a187672cadae7e96b8f7181974930329f7f1d77a1309185e94fff32e0bffa056
 HOSTS='https://github.com/itsthemoon/alexandria/releases/download/ https://download.kiwix.org/zim/ https://huggingface.co/LiquidAI/'
 
 say()  { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -24,7 +24,7 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum < "$1" | cut -d' ' -f
 size() { wc -c < "$1" | tr -d ' '; }
 free_bytes() { df -Pk "$1" | awk 'NR==2 {print $4 * 1024}'; }
 PROTO="=https"; [ -n "${ALEXANDRIA_BASE:-}" ] && PROTO="=https,file"
-get() { curl -fL --proto "$PROTO" --retry 5 --retry-delay 3 --progress-bar "$@"; }
+get() { curl -fL -g --proto "$PROTO" --retry 5 --retry-delay 3 --progress-bar "$@"; }
 pinned() { [ -n "${ALEXANDRIA_BASE:-}" ] || [ "$(sha "$1")" = "$2" ] || fail "The app download does not match the checksum in this installer. Nothing was installed."; }
 
 main() {
@@ -40,7 +40,7 @@ trap 'rm -rf "$TMP"' EXIT
 get -s -o "$TMP/files.txt" "$BASE/$EDITION-FILES.txt"
 awk -v base="${ALEXANDRIA_BASE:-}" -v hosts="$HOSTS" '
   BEGIN { nh = split(hosts, h, " ") }
-  { ok = ($1 ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) && ($1 !~ /\.\./) && ($2 ~ /^[0-9]+$/) && ($3 ~ /^[0-9a-f]{64}$/) && NF >= 4
+  { ok = ($1 ~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) && ($1 !~ /\.\./) && ($2 ~ /^[0-9]+$/) && length($2) <= 15 && ($3 ~ /^[0-9a-f]+$/) && length($3) == 64 && NF >= 4
     for (i = 4; i <= NF; i++) { good = (base != "" && index($i, base "/") == 1); for (k = 1; k <= nh; k++) if (index($i, h[k]) == 1) good = 1; if (!good) ok = 0 }
     if (!ok) { print "bad line " NR ": " $0 > "/dev/stderr"; bad = 1 } }
   END { exit bad }' "$TMP/files.txt" || fail "The file list from the release is malformed. Nothing was written."
@@ -115,7 +115,7 @@ while read -r name bytes want urls; do
   fi
   echo "[$n/$total] $name ($(gb "$bytes"))"
   for ext in part piece done; do [ -L "$f.$ext" ] && rm -f "$f.$ext"; done
-  set -- $urls
+  set -f; set -- $urls; set +f
   if [ $# -eq 1 ]; then
     if [ -f "$f.part" ] && [ "$(size "$f.part")" -ge "$bytes" ]; then rm -f "$f.part"; fi
     get -C - -o "$f.part" "$1"
@@ -146,7 +146,7 @@ while read -r name bytes want urls; do
     done
     rm -f "$f.piece" "$f.done"
   fi
-  [ "$(size "$f.part")" = "$bytes" ] || fail "$name downloaded with the wrong size. Run the installer again to resume."
+  [ "$(size "$f.part")" = "$bytes" ] || { rm -f "$f.part" "$f.done"; fail "$name downloaded with the wrong size. Run the installer again to resume."; }
   [ "$(sha "$f.part")" = "$want" ] || { rm -f "$f.part" "$f.done"; fail "$name failed its checksum. Run the installer again."; }
   mv "$f.part" "$f"
 done < "$TMP/files.txt"

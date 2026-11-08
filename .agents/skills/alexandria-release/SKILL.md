@@ -61,6 +61,9 @@ The release key never leaves the `release` environment in CI.
    profile, so the installer must create the parent folder before moving the app into it.
    A PowerShell CI step exits with the last native command's `$LASTEXITCODE`, so a test script whose
    last check runs an installer that is meant to fail must end with `exit 0`.
+   `install.sh` must not use awk interval expressions (`{64}`): the `mawk` in Ubuntu 22.04 and Debian
+   (older than 1.3.4-20200717) treats braces literally, so every line would look malformed. Use
+   `length()` checks. CI's newer Ubuntu won't catch this.
 
 ## 4. Mirror and host the big files
 
@@ -96,11 +99,19 @@ The release key never leaves the `release` environment in CI.
 - Put the app archive digests in `site/install.sh` (`MAC_SHA`, `LINUX_SHA`) and `site/install.ps1`
   (`$AppSha`), together with `VERSION`/`$Version` in the same edit. Never publish a version bump without its
   pins: the live installer would ask for a release that isn't there yet.
+- Prove the pins against the real assets: `gh release download v<ver> -D <dir> -p 'Alexandria-macos.tar.gz'
+  -p 'alexandria-linux-x64.tar.gz' -p 'alexandria-windows-x64.zip' -p 'alexandria-windows-arm64.zip'`, then
+  `scripts/check-pins.sh <dir>` must print "every pinned SHA-256 matches the built assets".
+- `site/` on `main` is not what users get; `gh-pages` is. Pins and version can sit on `main` early, but push
+  `gh-pages` only once the release is published.
 - Run the installer tests, commit, sync, push, then push the site to `gh-pages`. After a Pages push, poll
   `gh api repos/<owner>/<repo>/pages/builds/latest --jq .status` until `built` before comparing files.
 
 ## 7. Review, publish, prove
 
+- Run the security review before tagging, while app and core fixes are still free: after the tag, any
+  change to the app or the Rust crates needs a new version number, and only installer, workflow and
+  script fixes can still go into this release.
 - Security review before publishing: secrets and personal data in every tracked file and release asset,
   the installers, the verification core and IPC surface, and the CI workflows. Fix findings with tests.
 - Publish the release. Run the real one-line install. For Full, reuse the drive: pass the drive's parent

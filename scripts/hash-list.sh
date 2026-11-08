@@ -14,6 +14,7 @@ sha() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else
 hash_one() {
   local name=$1 bytes=$2 want=$3; shift 3
   case "$name" in */*|.*|*..*) echo "unsafe name: $name" >&2; exit 1 ;; esac
+  printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._-]+$' || { echo "unsafe name: $name" >&2; exit 1; }
   echo "hash $name ($((bytes / 1048576)) MB)"
   for u in "$@"; do curl -fsSL --retry 5 --retry-delay 5 "$u"; done \
     | tee >(sha > "$OUT/$name.sum") \

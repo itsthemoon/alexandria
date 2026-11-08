@@ -35,7 +35,7 @@ jobs:
       - name: Build the street-name sidecar
         if: ${{ inputs.streets }}
         run: |
-          python3 -m pip install --quiet duckdb 2>/dev/null || python3 -m pip install --quiet --break-system-packages duckdb
+          python3 -m pip install --quiet --require-hashes -r scripts/library-requirements.txt 2>/dev/null || python3 -m pip install --quiet --require-hashes --break-system-packages -r scripts/library-requirements.txt
           scripts/build-streets.sh "$RUNNER_TEMP/lib" library/lite.txt
       - name: Sign with the release key
         env:

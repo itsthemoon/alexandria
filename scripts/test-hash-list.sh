@@ -33,4 +33,10 @@ if check 'v0.3.0'; then echo "a version that differs from the tag should fail"; 
 mkmanifest 'v0.2.0-full' 'not-a-date'
 if check 'v0.2.0'; then echo "a bad date should fail"; exit 1; fi
 
+printf 'bad;name 4 %s http://example/x\n' "$root" >> "$T/list.txt"
+if out=$(ALEX=/bin/true bash "$ROOT/scripts/hash-list.sh" "$T/list.txt" "$T/MANIFEST" "$T/out" 'bad;name' 2>&1); then
+  echo "a name with a shell metacharacter was accepted"; exit 1
+fi
+printf '%s\n' "$out" | grep -q 'unsafe name' || { echo "no unsafe-name message for a metacharacter name"; exit 1; }
+
 echo "hash-list.sh --check enforces the Full release line: ok"

@@ -99,7 +99,7 @@ LIST="$T/list.txt"
 printf 'file.bin 12 %s http://127.0.0.1:%s/good.bin\n' "$WANT" "$PORT" > "$LIST"
 
 run() {
-  MIRROR_PART=4 ALEX="$BIN/alex" PATH="$BIN:$PATH" \
+  MIRROR_PART=4 MIRROR_ALLOW_FILE=1 ALEX="$BIN/alex" PATH="$BIN:$PATH" \
   GH_STORE="$T/store" GH_LOG_FILE="$LOG" \
   bash "$ROOT/scripts/mirror.sh" file.bin "http://127.0.0.1:$PORT/$1" "$LIST" library-data "$T/work"
 }
@@ -137,3 +137,19 @@ if grep -q 'delete library-data' "$LOG"; then echo "a successful re-run deleted 
 [ "$(staging_leftovers)" = "0" ] || { echo "staging leftovers remain after a successful re-run"; exit 1; }
 live_matches_good || { echo "live parts differ after a successful re-run"; exit 1; }
 echo "mirror stages, verifies, then promotes; live is never touched by a failed run: ok"
+refuse() {
+  local url="$1"
+  if out=$(MIRROR_ALLOW_FILE= ALEX="$BIN/alex" PATH="$BIN:$PATH" GH_STORE="$T/store" GH_LOG_FILE="$LOG" \
+      bash "$ROOT/scripts/mirror.sh" file.bin "$url" "$LIST" library-data "$T/work" 2>&1); then
+    echo "an unallowed URL was accepted: $url"; exit 1
+  fi
+  printf '%s\n' "$out" | grep -qi 'refus' || { echo "no refusal message for: $url"; exit 1; }
+}
+refuse "http://download.kiwix.org/zim/example.zim"
+refuse "https://evil.example/example.zim"
+refuse "file:///etc/passwd"
+if MIRROR_PART=4 ALEX="$BIN/alex" PATH="$BIN:$PATH" GH_STORE="$T/store" GH_LOG_FILE="$LOG" \
+   bash "$ROOT/scripts/mirror.sh" file.bin "http://127.0.0.1:$PORT/good.bin" "$LIST" library-data "$T/work" >/dev/null 2>&1; then
+  echo "a test-server URL without MIRROR_ALLOW_FILE was accepted"; exit 1
+fi
+echo "mirror refuses non-https URLs and hosts outside the allowlist: ok"

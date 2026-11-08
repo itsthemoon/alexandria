@@ -91,4 +91,52 @@ echo "small.bin 300000 $(sha < "$T/R/small.bin") $B/small.bin" >> "$T/R/full-FIL
 head -c 400000 /dev/urandom > "$LIB/small.bin.part"
 resume_ok "an oversized stale single-file part"
 cmp "$T/R/small.bin" "$LIB/small.bin" || { echo "stale part was not replaced"; exit 1; }
+
+mkdir -p "$T/R2" "$T/d2"
+printf 'huge.bin 99999999999999999999 0000000000000000000000000000000000000000000000000000000000000000 file://%s/R2/huge.bin\n' "$T" > "$T/R2/full-FILES.txt"
+if HOME="$T/home" ALEXANDRIA_BASE="file://$T/R2" ALEXANDRIA_DIR="$T/d2" ALEXANDRIA_EDITION=full \
+   bash "$ROOT/site/install.sh" < /dev/null > "$T/out" 2>&1; then
+  echo "a byte count with more than 15 digits was accepted"; exit 1
+fi
+grep -q 'malformed' "$T/out" || { echo "no malformed-line message for an oversized byte count"; cat "$T/out"; exit 1; }
+
+mkdir -p "$T/R3" "$T/d3"
+cp "$T/R/Alexandria-macos.tar.gz" "$T/R/alexandria-linux-x64.tar.gz" "$T/R/big.bin.part00" "$T/R/big.bin.part01" "$T/R/big.bin.part02" "$T/R3/"
+B3="file://$T/R3"
+BIGSHA=$(sha < "$T/big.bin")
+printf 'big.bin 2500000 %s %s/big.bin.part0*\n' "$BIGSHA" "$B3" > "$T/R3/full-FILES.txt"
+if HOME="$T/home" ALEXANDRIA_BASE="$B3" ALEXANDRIA_DIR="$T/d3" ALEXANDRIA_EDITION=full \
+   bash "$ROOT/site/install.sh" < /dev/null > "$T/out" 2>&1; then
+  echo "a glob in the URL list was expanded"; exit 1
+fi
+
+mkdir -p "$T/R4" "$T/d4"
+cp "$T/R/Alexandria-macos.tar.gz" "$T/R/alexandria-linux-x64.tar.gz" "$T/R4/"
+printf 'AAAA' > "$T/R4/curla.bin"
+printf 'BBBB' > "$T/R4/curlb.bin"
+printf 'AAAABBBB' > "$T/curl.bin"
+printf 'curl.bin 8 %s file://%s/R4/curl{a,b}.bin\n' "$(sha < "$T/curl.bin")" "$T" > "$T/R4/full-FILES.txt"
+if HOME="$T/home" ALEXANDRIA_BASE="file://$T/R4" ALEXANDRIA_DIR="$T/d4" ALEXANDRIA_EDITION=full \
+   bash "$ROOT/site/install.sh" < /dev/null > "$T/out" 2>&1; then
+  echo "a brace glob in the URL list was expanded"; exit 1
+fi
+
+printf 'big.bin 2500001 %s %s/big.bin.part00 %s/big.bin.part01 %s/big.bin.part02\n' "$BIGSHA" "$B3" "$B3" "$B3" > "$T/R3/full-FILES.txt"
+rm -rf "$T/d3/Alexandria"
+if HOME="$T/home" ALEXANDRIA_BASE="$B3" ALEXANDRIA_DIR="$T/d3" ALEXANDRIA_EDITION=full \
+   bash "$ROOT/site/install.sh" < /dev/null > "$T/out" 2>&1; then
+  echo "a wrong declared size must fail the install"; exit 1
+fi
+grep -q 'wrong size' "$T/out" || { echo "no wrong-size message"; cat "$T/out"; exit 1; }
+LIB3="$T/d3/Alexandria"
+[ ! -e "$LIB3/big.bin.part" ] || { echo "a stale .part survived a size failure"; exit 1; }
+[ ! -e "$LIB3/big.bin.done" ] || { echo "a stale .done survived a size failure"; exit 1; }
+printf 'big.bin 2500000 %s %s/big.bin.part00 %s/big.bin.part01 %s/big.bin.part02\n' "$BIGSHA" "$B3" "$B3" "$B3" > "$T/R3/full-FILES.txt"
+if HOME="$T/home" ALEXANDRIA_BASE="$B3" ALEXANDRIA_DIR="$T/d3" ALEXANDRIA_EDITION=full \
+   bash "$ROOT/site/install.sh" < /dev/null > "$T/out" 2>&1; then
+  cmp "$T/big.bin" "$LIB3/big.bin" || { echo "rerun after a size failure produced wrong bytes"; exit 1; }
+else
+  cat "$T/out"; echo "rerun after a size failure did not succeed"; exit 1
+fi
+
 echo "installer resumes multi-part downloads from any interrupt point: ok"

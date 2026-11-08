@@ -8,8 +8,8 @@ $RootKey = 'afcbc7a3ff47fac00ed3bcca1b2459d2a6a03053f9a0ed7bb572997af69d2f4a'
 $Base = if ($env:ALEXANDRIA_BASE) { $env:ALEXANDRIA_BASE } else { "https://github.com/$Repo/releases/download/$Version" }
 
 $AppSha = @{
-  x64 = 'd5e3467d50d7986d99b0802539ae3d59244ac77a2279831a8485f282ced66f07'
-  arm64 = 'a7dba384d0f83b2f130f9f03a8856ffb69f37978d509546b80bb0407d659898d'
+  x64 = '366436794708b956310afed99a2af14eacc78c5e5f1d6ff00230342535309279'
+  arm64 = 'b6d2ee5a54ed5911fcc29bf2af4945a89d193c1666944d2f2ba3df9a8347c39e'
 }
 $Hosts = @('https://github.com/itsthemoon/alexandria/releases/download/', 'https://download.kiwix.org/zim/', 'https://huggingface.co/LiquidAI/')
 $Proto = if ($env:ALEXANDRIA_BASE) { '=https,file' } else { '=https' }
@@ -19,7 +19,7 @@ function Say($m) { Write-Host $m -ForegroundColor Cyan }
 function Fail($m) { Write-Host "Error: $m" -ForegroundColor Red; throw $m }
 function Gb($b) { '{0:N1} GB' -f ($b / 1e9) }
 function Get-File($url, $out, [switch]$Resume) {
-  $a = @('-fL', '--proto', $Proto, '--retry', '5', '--retry-delay', '3', '--progress-bar', '-o', $out)
+  $a = @('-fL', '-g', '--proto', $Proto, '--retry', '5', '--retry-delay', '3', '--progress-bar', '-o', $out)
   if ($Resume) { $a += @('-C', '-') }
   & curl.exe @a $url
   if ($LASTEXITCODE -ne 0) { Fail "Download failed: $url. Run the installer again to resume." }
@@ -41,7 +41,7 @@ try {
     $stem = ($p[0] -split '\.')[0].ToUpper()
     if (-not ($p[0] -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -and $p[0] -notmatch '\.\.' -and $p[0] -notmatch '[. ]$' -and
               $Reserved -notcontains $stem -and
-              $p[1] -match '^[0-9]+$' -and $p[2] -cmatch '^[0-9a-f]{64}$' -and $urlsOk)) {
+              $p[1] -match '^[0-9]{1,15}$' -and $p[2] -cmatch '^[0-9a-f]{64}$' -and $urlsOk)) {
       Fail "The file list from the release is malformed (line: $_). Nothing was written."
     }
     [pscustomobject]@{ Name = $p[0]; Bytes = [int64]$p[1]; Sha = $p[2]; Urls = $p[3..($p.Count - 1)] }
@@ -131,7 +131,7 @@ try {
       Remove-Item $piece -ErrorAction SilentlyContinue
       Remove-Item $done -ErrorAction SilentlyContinue
     }
-    if ((Get-Item $part).Length -ne $f.Bytes) { Fail "$($f.Name) downloaded with the wrong size. Run the installer again to resume." }
+    if ((Get-Item $part).Length -ne $f.Bytes) { Remove-Item $part; Remove-Item "$p.done" -ErrorAction SilentlyContinue; Fail "$($f.Name) downloaded with the wrong size. Run the installer again to resume." }
     if ((Sha $part) -ne $f.Sha) { Remove-Item $part; Remove-Item "$p.done" -ErrorAction SilentlyContinue; Fail "$($f.Name) failed its checksum. Run the installer again." }
     Move-Item -Force $part $p
   }
