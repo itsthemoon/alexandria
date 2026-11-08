@@ -1,4 +1,4 @@
-use alexandria_zim::{article_html, html_to_text, internal_link};
+use alexandria_zim::{article_html, article_html_with, html_to_text, internal_link};
 
 #[test]
 fn keeps_block_structure_and_skips_chrome() {
@@ -79,4 +79,34 @@ fn internal_link_handles_odd_escapes() {
     assert_eq!(internal_link("C/Paris"), Some("Paris".to_string()));
     assert_eq!(internal_link("Paris?x=1"), Some("Paris".to_string()));
     assert_eq!(internal_link("./"), None);
+}
+
+#[test]
+fn images_are_inlined_only_through_the_resolver() {
+    let html = r#"<body><p>a<img src="./_assets_/x/Cat.jpg.webp" alt="A &quot;cat&quot;" width="220" height="140" srcset="evil.png 2x" onerror="x()">b<img src="https://example.com/t.png"></p></body>"#;
+    let mut asked = Vec::new();
+    let out = article_html_with(html, &mut |src: &str| {
+        asked.push(src.to_string());
+        if src.contains("Cat") {
+            Some("data:image/webp;base64,QUJD".to_string())
+        } else {
+            None
+        }
+    });
+    assert_eq!(asked, ["./_assets_/x/Cat.jpg.webp", "https://example.com/t.png"]);
+    assert!(out.contains(r#"<img src="data:image/webp;base64,QUJD" alt="A &quot;cat&quot;" width="220" height="140">"#), "{out}");
+    assert!(!out.contains("example.com"));
+    assert!(!out.contains("srcset"));
+    assert!(!out.contains("onerror"));
+    assert!(!article_html(html).contains("<img"));
+}
+
+#[test]
+fn resolver_output_that_is_not_an_image_data_uri_is_dropped() {
+    let html = r#"<body><img src="a.png"><img src="b.png"></body>"#;
+    let out = article_html_with(html, &mut |src: &str| match src {
+        "a.png" => Some("javascript:alert(1)".to_string()),
+        _ => Some("data:image/png;base64,QQ==\" onload=\"x".to_string()),
+    });
+    assert!(!out.contains("<img"), "{out}");
 }

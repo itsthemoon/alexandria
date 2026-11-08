@@ -25,3 +25,4 @@ pub.txt
 !tests/fixture-library/MANIFEST
 !tests/fixture-library/MANIFEST.sig
 !tests/fixture-library/*.hashes
+scripts/__pycache__/

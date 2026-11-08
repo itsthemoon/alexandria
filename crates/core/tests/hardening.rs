@@ -62,3 +62,40 @@ fn refuses_symlinked_or_oversized_hash_lists() {
     fs::write(&hashes, extra).unwrap();
     assert!(VerifiedFile::open(&real, &e, 4096).is_err());
 }
+
+#[test]
+#[cfg(unix)]
+fn rejects_a_symlink_component_inside_the_library() {
+    use std::os::unix::fs::symlink;
+    let d = tempdir("symlink-component");
+    let target = d.join("target.bin");
+    fs::write(&target, b"hello world").unwrap();
+    let e = entry_for(&target);
+    let link = d.join("f");
+    symlink(&target, &link).unwrap();
+    assert!(VerifiedFile::open_in(&d, &e, 4096).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn rejects_a_symlinked_directory_component() {
+    use std::os::unix::fs::symlink;
+    let d = tempdir("symlink-dir");
+    let realdir = d.join("real");
+    fs::create_dir(&realdir).unwrap();
+    let target = realdir.join("f");
+    fs::write(&target, b"hello world").unwrap();
+    let e = {
+        let hashes = write_hashes(&target, 4096).unwrap();
+        let raw = fs::read(&hashes).unwrap();
+        let mut h = [0u8; 32];
+        h.copy_from_slice(&Sha256::digest(&raw));
+        Entry {
+            hashes_sha256: h,
+            size: fs::metadata(&target).unwrap().len(),
+            path: "sub/f".into(),
+        }
+    };
+    symlink(&realdir, d.join("sub")).unwrap();
+    assert!(VerifiedFile::open_in(&d, &e, 4096).is_err());
+}

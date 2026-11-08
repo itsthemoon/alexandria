@@ -77,8 +77,26 @@ pub fn best_passage(text: &str, q: &str, size: usize) -> String {
     best.1
 }
 
+const BODY_MATCH_CAP: i64 = 200_000;
+
+fn match_count(c: &Connection, fts: &str) -> i64 {
+    c.query_row(
+        &format!(
+            "SELECT count(*) FROM (SELECT rowid FROM articles WHERE articles MATCH ?1 LIMIT {})",
+            BODY_MATCH_CAP + 1
+        ),
+        [fts],
+        |r| r.get(0),
+    )
+    .unwrap_or(0)
+}
+
 fn rows(c: &Connection, fts: &str, limit: usize) -> Result<Vec<(String, String, String)>, String> {
-    let sql = format!("SELECT title, url, body FROM articles WHERE articles MATCH ?1 ORDER BY bm25(articles, 10.0, 1.0) LIMIT {limit}");
+    let sql = if crate::has_docs(c) {
+        format!("SELECT docs.title, docs.url, '' FROM (SELECT rowid AS r, rank AS s FROM articles WHERE articles MATCH ?1 ORDER BY rank LIMIT {limit}) t JOIN docs ON docs.id = t.r ORDER BY t.s")
+    } else {
+        format!("SELECT title, url, body FROM articles WHERE articles MATCH ?1 ORDER BY bm25(articles, 10.0, 1.0) LIMIT {limit}")
+    };
     let mut st = c.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let out = st
         .query_map([fts], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -93,20 +111,54 @@ fn count(c: &Connection, fts: &str) -> f64 {
         .unwrap_or(0) as f64
 }
 
-pub fn ask_candidates(c: &Connection, pack: &str, q: &str) -> Result<Vec<Pick>, String> {
+pub fn ask_candidates(
+    c: &Connection,
+    pack: &str,
+    q: &str,
+    body: &(dyn Fn(&str) -> Option<String> + Sync),
+) -> Result<Vec<Pick>, String> {
     let ws = words(q);
     if ws.is_empty() {
         return Ok(Vec::new());
     }
+    let contentless = crate::has_docs(c);
     let term = |w: &str| format!("\"{}\"*", stem(w));
-    let total = c.query_row("SELECT max(rowid) FROM articles", [], |r| r.get::<_, Option<i64>>(0)).ok().flatten().unwrap_or(1).max(1) as f64;
+    let total = crate::meta_int(c, "articles")
+        .unwrap_or_else(|| {
+            c.query_row("SELECT max(rowid) FROM articles", [], |r| r.get::<_, Option<i64>>(0))
+                .ok()
+                .flatten()
+                .unwrap_or(1)
+        })
+        .max(1) as f64;
     let idf: Vec<f64> = ws.iter().map(|w| (1.0 + total / (1.0 + count(c, &term(w)))).ln()).collect();
     let mass: f64 = idf.iter().sum();
-    let any = ws.iter().map(|w| term(w)).collect::<Vec<_>>().join(" OR ");
-    let mut found = rows(c, &any, 12)?;
-    found.extend(rows(c, &format!("title : ({any})"), 12)?);
+    let terms: Vec<String> = ws.iter().map(|w| term(w)).collect();
+    let any = terms.join(" OR ");
+    let mut pairs = Vec::new();
+    for i in 0..terms.len() {
+        for j in (i + 1)..terms.len() {
+            pairs.push(format!("({} AND {})", terms[i], terms[j]));
+        }
+    }
+    let at_least_two = pairs.join(" OR ");
     let mut rare: Vec<usize> = (0..ws.len()).collect();
     rare.sort_by(|a, b| idf[*b].total_cmp(&idf[*a]));
+    let body_query = if contentless && terms.len() >= 2 && match_count(c, &any) > BODY_MATCH_CAP {
+        let rarest = &terms[rare[0]];
+        if match_count(c, rarest) > BODY_MATCH_CAP {
+            &at_least_two
+        } else {
+            rarest
+        }
+    } else {
+        &any
+    };
+    let mut found = rows(c, body_query, 12)?;
+    found.extend(rows(c, &format!("title : ({any})"), 12)?);
+    if contentless && terms.len() > 1 {
+        found.extend(rows(c, &format!("title : ({at_least_two})"), 12)?);
+    }
     for &i in rare.iter().take(3) {
         found.extend(rows(c, &format!("title : ^\"{}\"", ws[i]), 5)?);
     }
@@ -116,23 +168,40 @@ pub fn ask_candidates(c: &Connection, pack: &str, q: &str) -> Result<Vec<Pick>, 
     let practical = PRACTICAL.iter().any(|p| pack.starts_with(p));
     let ifixit = pack.starts_with("ifixit");
     let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    for (title, url, body) in found {
+    let mut cands: Vec<(String, String, String, f64, f64, bool)> = Vec::new();
+    for (title, url, stored) in found {
         if !seen.insert(url.clone()) {
             continue;
         }
         let tt = tokens(&title);
         let tcov: f64 = ws.iter().zip(&idf).filter(|(w, _)| has(&tt, w)).map(|(_, i)| i).sum::<f64>() / mass;
         let focus = tt.iter().filter(|t| ws.iter().any(|w| same_word(t, w))).count() as f64 / tt.len().max(1) as f64;
-        let bscore = passages(&body, 700)
+        let low = title.to_lowercase();
+        let junk = title.contains('(') || title.contains('/') || low.contains("disambiguation") || low.contains("quiz");
+        cands.push((title, url, stored, tcov, focus, junk));
+    }
+    let bodies: Vec<String> = if contentless {
+        std::thread::scope(|s| {
+            let jobs: Vec<_> = cands
+                .iter()
+                .map(|(_, url, _, _, _, _)| s.spawn(move || body(url).unwrap_or_default()))
+                .collect();
+            jobs.into_iter()
+                .map(|j| j.join().unwrap_or_default())
+                .collect()
+        })
+    } else {
+        cands.iter().map(|(_, _, stored, _, _, _)| stored.clone()).collect()
+    };
+    let mut out = Vec::new();
+    for ((title, url, _, tcov, focus, junk), text) in cands.into_iter().zip(bodies) {
+        let bscore = passages(&text, 700)
             .iter()
             .map(|p| {
                 let pt = tokens(p);
                 ws.iter().zip(&idf).filter(|(w, _)| has(&pt, w)).map(|(_, i)| i).sum::<f64>() / mass
             })
             .fold(0.0, f64::max);
-        let low = title.to_lowercase();
-        let junk = title.contains('(') || title.contains('/') || low.contains("disambiguation") || low.contains("quiz");
         let mut score = 3.0 * tcov + focus + 2.0 * bscore - if junk { 1.5 } else { 0.0 } + if focus == 1.0 { 1.0 } else { 0.0 };
         if howto && practical {
             score += 0.4;

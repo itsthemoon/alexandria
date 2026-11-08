@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${ALEXANDRIA_PUBKEY:?set ALEXANDRIA_PUBKEY to the release public key hex}"
-VERSION="${VERSION:-0.1.1}"
+VERSION="${VERSION:-$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/app/Cargo.toml | head -1)}"
 APP="dist/Alexandria.app"
 DMG="dist/Alexandria-${VERSION}.dmg"
 

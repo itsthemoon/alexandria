@@ -22,7 +22,7 @@ async function loadBrowse(reset) {
     const from = page.total ? browseOffset + 1 : 0;
     const to = Math.min(browseOffset + page.items.length, page.total);
     $('browsemeta').textContent = page.total
-      ? `${from.toLocaleString()}–${to.toLocaleString()} of ${page.total.toLocaleString()} articles`
+      ? `${from.toLocaleString()}–${to.toLocaleString()} of ${page.partial ? 'at least ' : ''}${page.total.toLocaleString()} articles`
       : 'No titles match that filter.';
     $('browseprev').disabled = browseOffset === 0;
     $('browsenext').disabled = to >= page.total;

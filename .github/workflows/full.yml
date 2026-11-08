@@ -1,0 +1,92 @@
+name: full
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the Full library files to (e.g. v0.2.0)
+        required: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      names: ${{ steps.list.outputs.names }}
+    steps:
+      - name: Check the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "bad tag"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: List the files to hash
+        id: list
+        run: |
+          names=$(grep -vE '^\s*(#|$)' library/full.txt | awk '{print $1}' | jq -R -s -c 'split("\n")[:-1]')
+          echo "names=$names" >> "$GITHUB_OUTPUT"
+
+  hash:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      - name: Build the CLI
+        run: cargo build --release -p alexandria-cli
+      - name: Hash one file from where users download it
+        run: scripts/hash-list.sh library/full.txt library/full-MANIFEST "$RUNNER_TEMP/lib" "${{ matrix.name }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.name }}.hashes
+          path: ${{ runner.temp }}/lib/${{ matrix.name }}.hashes
+          if-no-files-found: error
+
+  sign:
+    needs: hash
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Check the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "bad tag"; exit 1; }
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      - name: Build the CLI
+        run: cargo build --release -p alexandria-cli
+      - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e
+        with:
+          path: ${{ runner.temp }}/lib
+          merge-multiple: true
+      - name: Check every file against the manifest
+        run: scripts/hash-list.sh library/full.txt library/full-MANIFEST "$RUNNER_TEMP/lib" --check "$TAG"
+      - name: Sign with the release key
+        env:
+          RELEASE_SEED: ${{ secrets.ALEXANDRIA_RELEASE_SEED }}
+        run: |
+          test -n "$RELEASE_SEED" || { echo "ALEXANDRIA_RELEASE_SEED secret is missing"; exit 1; }
+          umask 077
+          printf '%s' "$RELEASE_SEED" > "$RUNNER_TEMP/seed"
+          target/release/alex sign "$RUNNER_TEMP/lib" "$RUNNER_TEMP/seed"
+          rm -f "$RUNNER_TEMP/seed"
+          cp library/KEYS library/KEYS.sig "$RUNNER_TEMP/lib/"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          base="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          scripts/release-files.sh "$RUNNER_TEMP/lib" library/full.txt full "$base" "$RUNNER_TEMP/out"
+          gh release upload "$TAG" "$RUNNER_TEMP"/out/* --clobber

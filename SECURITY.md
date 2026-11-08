@@ -11,13 +11,23 @@ rather than in a public issue. You'll get a reply within a week.
 **A changed library file.** Every file is listed in a `MANIFEST` with its size and a
 SHA-256 hash for each 1 MiB piece. The app checks each piece against that list every time it
 reads it, so a corrupted, edited or swapped file is refused at the moment of use, not just at
-install. Symlinks are refused.
+install. Symlinks are refused anywhere on the path inside the library.
+
+**Street search.** The street list (`streets.txt`) is read through the same verifying reader as
+every other library byte — the header, index and each block — so street names and coordinates are
+covered by "Sources verified". This closes a gap from v0.1, when the app opened `streets.txt` with
+a plain file open outside the verifier and street names were not covered by the signature. A test
+(`crates/search/tests/streets_tamper.rs`) flips one byte in the file after signing and checks the
+tampered row is refused, where the old code served it.
 
 **An older library put back.** Each app has a minimum release date and a list of removed
 release keys built in, and refuses libraries older than that date or signed only by a removed
-key, even if an old `KEYS` file still lists it. The app also remembers the newest library it
-has opened on this computer and refuses older ones, so a library can't be quietly swapped for an
-earlier signed copy. To use an older drive again, run the install command on it to update it.
+key, even if an old `KEYS` file still lists it. The app also remembers the newest library of each
+edition (Lite and Full) it has opened on this computer and refuses older ones of that edition, so a
+library can't be quietly swapped for an earlier signed copy. The edition is read from the signed
+release name (Full's ends in `-full`), and the release build checks that name before signing. The check compares release dates, so a different library signed with the
+same date as the newest one seen is still accepted. To use an older drive again, run the
+install command on it to update it.
 
 **A forged library.** The `MANIFEST` is signed with Ed25519. The app has one public key built
 in, the *root key*. A library is accepted when:
@@ -30,9 +40,15 @@ other. The root key is kept offline by the maintainer. Release keys are GitHub A
 secrets that can only be used after a maintainer approves a release.
 
 **Hostile content in an article.** Articles are cleaned before display (no scripts, styles,
-forms, frames or event handlers), shown in a frame that cannot run scripts, under a
-content-security policy that blocks network loads. The reading, map and search code checks the
-size of every structure it reads from a file, and has limits on decompression.
+forms, frames or event handlers), shown in a frame that cannot run scripts and has its own
+isolated origin, so it cannot reach the app or its controls, under a content-security policy
+that blocks network loads. Clicking a link in an article asks the app to open that article;
+the app window refuses to load anything except its own pages. In the Full edition, articles also show
+their images: each image is read from the signed pack through the verifying reader and
+embedded in the article frame as a data: URL. Only image formats are allowed (webp, png,
+jpeg, gif and svg+xml), loaded through an `<img>` element, with at most 24 MB of images per
+article and 4 MB per image. The reading, map and search code checks the size of every
+structure it reads from a file, and has limits on decompression.
 
 **Network use.** The app contains no networking code. The local AI runner
 (`llama-completion` from llama.cpp, built from a pinned commit) is started with an empty
@@ -67,8 +83,12 @@ environment and opens no sockets. CI checks the socket part on Linux.
   photos the app can't read (such as HEIC) open in your usual viewer when you click them, so a
   crafted file put there by someone with access to the drive reaches that viewer.
 - **Bugs in third-party parsers.** llama.cpp parses the model file, pdf-extract parses PDF
-  guides, and the system web view renders articles. They only ever see verified library files,
-  but llama.cpp and the web view are memory-unsafe code outside this project.
+  guides, SQLite parses the search index (an unsigned file made on your computer, opened
+  read-only with SQLite's defensive settings), and the system web view renders articles and decodes the images they show. They only
+  ever see verified library files, and the images are the publisher's signed bytes, but
+  llama.cpp, the web view's image decoders and the web view itself are memory-unsafe code
+  outside this project. A bug in an image decoder is contained only by the web view, whose
+  strength varies by operating system.
 
 There is no operating-system sandbox around the app. Its protections come from its own code
 and from the web view's content policy.

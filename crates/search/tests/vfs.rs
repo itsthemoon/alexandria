@@ -90,9 +90,9 @@ fn query_reads_through_verified_pages() {
     assert_eq!(query(conn.conn(), "Kinshasa").unwrap()[0].title, "Kinshasa");
     assert_eq!(query(conn.conn(), "What is Kinshasa?").unwrap()[0].title, "Kinshasa");
     assert_eq!(query(conn.conn(), "kinshasa zanzibar").unwrap()[0].title, "Kinshasa");
-    let h = alexandria_search::ask_candidates(conn.conn(), "wikipedia_en", "How do I purify water without a filter?").unwrap();
+    let h = alexandria_search::ask_candidates(conn.conn(), "wikipedia_en", "How do I purify water without a filter?", &|_| None).unwrap();
     assert_eq!(h[0].title, "Water purification", "{h:?}");
-    let d = alexandria_search::ask_candidates(conn.conn(), "wikipedia_en", "What causes dysentery?").unwrap();
+    let d = alexandria_search::ask_candidates(conn.conn(), "wikipedia_en", "What causes dysentery?", &|_| None).unwrap();
     assert_eq!(d[0].title, "Dysentery", "{d:?}");
     let picked = alexandria_search::pick_sources(d.into_iter().map(|p| ("w".to_string(), p)).collect(), 3, "What causes dysentery?");
     assert!(picked.iter().all(|(_, p)| p.title != "Vibrio"), "body-only mention kept: {picked:?}");
@@ -198,6 +198,17 @@ fn a_missing_or_garbage_local_index_is_an_error_not_a_panic() {
     let junk = dir.join("junk.search.db");
     fs::write(&junk, b"this is not sqlite at all, just bytes").unwrap();
     assert!(alexandria_search::open_local(&junk).is_err());
+}
+
+#[test]
+fn a_corrupted_local_index_is_refused_without_panicking() {
+    let dir = tmpdir("corrupt");
+    let db = dir.join("pack.zim.0123456789abcdef.search.db");
+    build_db(&db);
+    let mut bytes = fs::read(&db).unwrap();
+    bytes[..16].fill(0);
+    fs::write(&db, &bytes).unwrap();
+    assert!(alexandria_search::open_local(&db).is_err());
 }
 
 #[test]

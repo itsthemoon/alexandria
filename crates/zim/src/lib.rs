@@ -2,6 +2,7 @@ use std::io::Read;
 use std::sync::Arc;
 
 pub const MAGIC: u32 = 0x044D_495A;
+pub const FILTER_SCAN_CAP: usize = 1_000_000;
 const MAX_CLUSTER: usize = 64 << 20;
 const MAX_REDIRECTS: u32 = 16;
 
@@ -19,6 +20,7 @@ pub enum Error {
     OutOfRange,
     Source(String),
     TooLarge,
+    NoTitleOrder,
 }
 
 impl std::fmt::Display for Error {
@@ -36,6 +38,7 @@ impl std::fmt::Display for Error {
             Error::OutOfRange => write!(f, "offset out of range"),
             Error::Source(e) => write!(f, "source: {e}"),
             Error::TooLarge => write!(f, "cluster exceeds the size cap"),
+            Error::NoTitleOrder => write!(f, "no title order (no title pointer list and no title listing entry)"),
         }
     }
 }
@@ -98,11 +101,18 @@ impl Entry {
     }
 }
 
+enum TitleOrder {
+    Ptrs,
+    Listing { at: u64, len: u32, all_articles: bool },
+    None,
+}
+
 pub struct Zim<S: Source> {
     src: S,
     pub header: Header,
     mimes: Vec<String>,
     cache: Option<(u32, Arc<Vec<u8>>)>,
+    title_order: TitleOrder,
 }
 
 fn u16le(b: &[u8], at: usize) -> u16 {
@@ -151,12 +161,15 @@ impl<S: Source> Zim<S> {
             return Err(Error::Truncated);
         }
         let mimes = read_mimes(&mut src, header.mime_list_pos, size)?;
-        Ok(Zim {
+        let mut zim = Zim {
             src,
             header,
             mimes,
             cache: None,
-        })
+            title_order: TitleOrder::Ptrs,
+        };
+        zim.title_order = zim.resolve_title_order()?;
+        Ok(zim)
     }
 
     pub fn size(&self) -> u64 {
@@ -187,6 +200,134 @@ impl<S: Source> Zim<S> {
         parse_dirent(&buf)
     }
 
+    fn resolve_title_order(&mut self) -> Result<TitleOrder> {
+        if self.header.title_ptr_pos != u64::MAX && self.header.title_ptr_pos < self.src.size() {
+            return Ok(TitleOrder::Ptrs);
+        }
+        for name in ["listing/titleOrdered/v1", "listing/titleOrdered/v0"] {
+            let Ok(idx) = self.find_index('X', name) else {
+                continue;
+            };
+            let Ok(e) = self.entry(idx) else {
+                continue;
+            };
+            if let Ok((at, len)) = self.title_blob_span(e.cluster, e.blob) {
+                if len >= 4 && len % 4 == 0 {
+                    return Ok(TitleOrder::Listing {
+                        at,
+                        len: len / 4,
+                        all_articles: name.ends_with("v1"),
+                    });
+                }
+            }
+        }
+        Ok(TitleOrder::None)
+    }
+
+    fn title_blob_span(&mut self, cluster: u32, blob: u32) -> Result<(u64, u32)> {
+        let (start, end) = self.cluster_bounds(cluster)?;
+        if end <= start {
+            return Err(Error::Truncated);
+        }
+        let kind = self.src.read_at(start, 1)?[0];
+        if kind & 0x10 != 0 || kind & 0x0F > 1 {
+            return Err(Error::BadCluster(kind));
+        }
+        let (s, e) = self.plain_blob_span_raw(start + 1, end, blob)?;
+        Ok((start + 1 + s, (e - s) as u32))
+    }
+
+    pub fn title_entry(&mut self, pos: u32) -> Result<Entry> {
+        let idx = match &self.title_order {
+            TitleOrder::Ptrs => {
+                let b = self.src.read_at(self.header.title_ptr_pos + pos as u64 * 4, 4)?;
+                u32le(&b, 0)
+            }
+            TitleOrder::Listing { at, len, .. } => {
+                if pos >= *len {
+                    return Err(Error::OutOfRange);
+                }
+                let b = self.src.read_at(at + pos as u64 * 4, 4)?;
+                u32le(&b, 0)
+            }
+            TitleOrder::None => return Err(Error::NoTitleOrder),
+        };
+        self.entry(idx)
+    }
+
+    pub fn article_count_bound(&mut self) -> Result<usize> {
+        let n = match &self.title_order {
+            TitleOrder::Ptrs => self.header.article_count as usize,
+            TitleOrder::Listing { len, .. } => *len as usize,
+            TitleOrder::None => return Err(Error::NoTitleOrder),
+        };
+        if matches!(&self.title_order, TitleOrder::Listing { all_articles: true, .. }) {
+            return Ok(n);
+        }
+        let mut lo = 0usize;
+        let mut hi = n;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let ns = self.title_entry(mid as u32)?.namespace;
+            if ns == 'A' || ns == 'C' {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(lo)
+    }
+
+    pub fn browse(
+        &mut self,
+        needle: &str,
+        reverse: bool,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(usize, Vec<Entry>)> {
+        let needle = needle.to_lowercase();
+        if needle.is_empty() {
+            let k = self.article_count_bound()?;
+            let mut out = Vec::new();
+            if !reverse {
+                let mut pos = offset.min(k);
+                while out.len() < limit && pos < k {
+                    let e = self.title_entry(pos as u32)?;
+                    if is_article_entry(&e) {
+                        out.push(e);
+                    }
+                    pos += 1;
+                }
+            } else if offset < k {
+                let mut pos = k - 1 - offset;
+                loop {
+                    let e = self.title_entry(pos as u32)?;
+                    if is_article_entry(&e) {
+                        out.push(e);
+                    }
+                    if out.len() >= limit || pos == 0 {
+                        break;
+                    }
+                    pos -= 1;
+                }
+            }
+            Ok((k, out))
+        } else {
+            let entries = self.scan_entries_limit(FILTER_SCAN_CAP)?;
+            let mut matches: Vec<Entry> = entries
+                .into_iter()
+                .filter(|e| is_article_entry(e) && e.title.to_lowercase().contains(&needle))
+                .collect();
+            matches.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+            let total = matches.len();
+            if reverse {
+                matches.reverse();
+            }
+            let items = matches.into_iter().skip(offset).take(limit).collect();
+            Ok((total, items))
+        }
+    }
+
     pub fn scan_entries(&mut self) -> Result<Vec<Entry>> {
         self.scan_entries_up_to(8_000_000)
     }
@@ -196,6 +337,11 @@ impl<S: Source> Zim<S> {
         if n > cap {
             return Err(Error::OutOfRange);
         }
+        self.scan_entries_limit(n)
+    }
+
+    pub fn scan_entries_limit(&mut self, limit: usize) -> Result<Vec<Entry>> {
+        let target = std::cmp::min(self.header.article_count as usize, limit);
         let first = self.src.read_at(self.header.url_ptr_pos, 8)?;
         let start = u64le(&first, 0);
         let size = self.src.size();
@@ -206,7 +352,7 @@ impl<S: Source> Zim<S> {
         let mut buf: Vec<u8> = Vec::new();
         let mut pos = 0usize;
         let mut file_off = start;
-        while out.len() < n {
+        while out.len() < target {
             if buf.len().saturating_sub(pos) < 8192 && file_off < size {
                 let want = std::cmp::min(1 << 20, (size - file_off) as usize);
                 if want == 0 {
@@ -281,6 +427,14 @@ impl<S: Source> Zim<S> {
     pub fn find(&mut self, namespace: char, url: &str) -> Result<Entry> {
         let i = self.find_index(namespace, url)?;
         self.entry(i)
+    }
+
+    pub fn lookup_url(&mut self, url: &str) -> Option<Entry> {
+        let idx = self
+            .find_index('C', url)
+            .ok()
+            .or_else(|| self.find_index('A', url).ok())?;
+        self.resolve(idx).ok()
     }
 
     pub fn main_page(&mut self) -> Result<Entry> {
@@ -380,27 +534,167 @@ impl<S: Source> Zim<S> {
         Ok(arc)
     }
 
-    pub fn read_blob(&mut self, cluster: u32, blob: u32) -> Result<Vec<u8>> {
+    fn plain_blob_span(&mut self, at: u64, end: u64, blob: u32) -> Result<(u64, u64)> {
+        let (s, e) = self.plain_blob_span_raw(at, end, blob)?;
+        if e - s > MAX_CLUSTER as u64 {
+            return Err(Error::TooLarge);
+        }
+        Ok((s, e))
+    }
+
+    fn plain_blob_span_raw(&mut self, at: u64, end: u64, blob: u32) -> Result<(u64, u64)> {
+        let span = end - at;
+        if span < 4 {
+            return Err(Error::Truncated);
+        }
+        let first = u32le(&self.src.read_at(at, 4)?, 0) as u64;
+        if first < 4 || first > span || first % 4 != 0 {
+            return Err(Error::Truncated);
+        }
+        if blob as u64 >= first / 4 - 1 {
+            return Err(Error::OutOfRange);
+        }
+        let t = self.src.read_at(at + blob as u64 * 4, 8)?;
+        let (s, e) = (u32le(&t, 0) as u64, u32le(&t, 4) as u64);
+        if s < first || e < s || e > span {
+            return Err(Error::Truncated);
+        }
+        Ok((s, e))
+    }
+
+    fn read_plain_blob(&mut self, at: u64, end: u64, blob: u32) -> Result<Vec<u8>> {
+        let (s, e) = self.plain_blob_span(at, end, blob)?;
+        self.src.read_at(at + s, (e - s) as usize)
+    }
+
+    pub fn blob_len(&mut self, cluster: u32, blob: u32) -> Result<usize> {
+        let (start, end) = self.cluster_bounds(cluster)?;
+        if end <= start {
+            return Err(Error::Truncated);
+        }
+        let kind = self.src.read_at(start, 1)?[0];
+        if kind & 0x10 == 0 && kind & 0x0F <= 1 && self.cache.as_ref().map(|c| c.0) != Some(cluster) {
+            let (s, e) = self.plain_blob_span(start + 1, end, blob)?;
+            return Ok((e - s) as usize);
+        }
         let plain = self.load_cluster(cluster)?;
-        let first = u32le(&plain, 0) as usize;
-        if first < 4 || first > plain.len() || first % 4 != 0 {
+        let (s, e) = blob_span(&plain, blob)?;
+        Ok(e - s)
+    }
+
+    fn read_blob_capped(&mut self, cluster: u32, blob: u32, max: usize) -> Result<Vec<u8>> {
+        let (start, end) = self.cluster_bounds(cluster)?;
+        if end - start > MAX_CLUSTER as u64 + 1 {
+            return Err(Error::TooLarge);
+        }
+        let kind = self.src.read_at(start, 1)?[0];
+        if kind & 0x10 == 0 && kind & 0x0F <= 1 {
+            let (s, e) = self.plain_blob_span(start + 1, end, blob)?;
+            if e - s > max as u64 {
+                return Err(Error::TooLarge);
+            }
+            return self.src.read_at(start + 1 + s, (e - s) as usize);
+        }
+        if kind & 0x0F != 5 {
+            return Err(Error::BadCluster(kind & 0x0F));
+        }
+        let raw = self.src.read_at(start, (end - start) as usize)?;
+        let mut dec = ruzstd::decoding::StreamingDecoder::new(&raw[1..])
+            .map_err(|e| Error::Decompress(format!("{e:?}")))?;
+        let mut head = [0u8; 4];
+        dec.read_exact(&mut head)?;
+        let first = u32le(&head, 0) as usize;
+        if first < 4 || first % 4 != 0 || first > MAX_CLUSTER {
             return Err(Error::Truncated);
         }
         let blobs = first / 4 - 1;
         if blob as usize >= blobs {
             return Err(Error::OutOfRange);
         }
-        let table = blob as usize * 4;
-        if table + 8 > first {
+        let (s, e) = if blob == 0 {
+            let mut e_buf = [0u8; 4];
+            dec.read_exact(&mut e_buf)?;
+            (first, u32le(&e_buf, 0) as usize)
+        } else {
+            read_skip(&mut dec, blob as usize * 4 - 4)?;
+            let mut se = [0u8; 8];
+            dec.read_exact(&mut se)?;
+            (u32le(&se, 0) as usize, u32le(&se, 4) as usize)
+        };
+        if s < first || e < s || e > MAX_CLUSTER {
             return Err(Error::Truncated);
         }
-        let s = u32le(&plain, table) as usize;
-        let e = u32le(&plain, table + 4) as usize;
-        if s < first || e < s || e > plain.len() {
-            return Err(Error::Truncated);
+        if e - s > max {
+            return Err(Error::TooLarge);
         }
+        read_skip(&mut dec, s - (blob as usize * 4 + 8))?;
+        let mut out = vec![0u8; e - s];
+        dec.read_exact(&mut out)?;
+        Ok(out)
+    }
+
+    pub fn image_data_uri(&mut self, src: &str, max: usize) -> Option<String> {
+        let url = internal_link(src)?;
+        let idx = match self.find_index('C', &url) {
+            Ok(i) => i,
+            Err(_) => self.find_index('I', url.strip_prefix("I/")?).ok()?,
+        };
+        let e = self.resolve(idx).ok()?;
+        let mime = self.mime(e.mime)?;
+        if !matches!(mime, "image/webp" | "image/png" | "image/jpeg" | "image/gif" | "image/svg+xml") {
+            return None;
+        }
+        let mime = mime.to_string();
+        let bytes = self.read_blob_capped(e.cluster, e.blob, max).ok()?;
+        Some(format!("data:{mime};base64,{}", base64(&bytes)))
+    }
+
+    pub fn read_blob(&mut self, cluster: u32, blob: u32) -> Result<Vec<u8>> {
+        if self.cache.as_ref().map(|c| c.0) != Some(cluster) {
+            let (start, end) = self.cluster_bounds(cluster)?;
+            if end <= start {
+                return Err(Error::Truncated);
+            }
+            let kind = self.src.read_at(start, 1)?[0];
+            if kind & 0x10 == 0 && kind & 0x0F <= 1 {
+                return self.read_plain_blob(start + 1, end, blob);
+            }
+        }
+        let plain = self.load_cluster(cluster)?;
+        let (s, e) = blob_span(&plain, blob)?;
         Ok(plain[s..e].to_vec())
     }
+}
+
+fn blob_span(plain: &[u8], blob: u32) -> Result<(usize, usize)> {
+    let first = u32le(plain, 0) as usize;
+    if first < 4 || first > plain.len() || first % 4 != 0 {
+        return Err(Error::Truncated);
+    }
+    let blobs = first / 4 - 1;
+    if blob as usize >= blobs {
+        return Err(Error::OutOfRange);
+    }
+    let table = blob as usize * 4;
+    if table + 8 > first {
+        return Err(Error::Truncated);
+    }
+    let s = u32le(plain, table) as usize;
+    let e = u32le(plain, table + 4) as usize;
+    if s < first || e < s || e > plain.len() {
+        return Err(Error::Truncated);
+    }
+    Ok((s, e))
+}
+
+fn read_skip(dec: &mut dyn Read, mut left: usize) -> Result<()> {
+    let mut buf = [0u8; 4096];
+    while left > 0 {
+        let n = std::cmp::min(left, buf.len());
+        dec.read_exact(&mut buf[..n])?;
+        left -= n;
+    }
+    Ok(())
 }
 
 fn read_mimes<S: Source>(src: &mut S, at: u64, size: u64) -> Result<Vec<String>> {
@@ -423,6 +717,13 @@ fn read_mimes<S: Source>(src: &mut S, at: u64, size: u64) -> Result<Vec<String>>
         }
     }
     Err(Error::Truncated)
+}
+
+fn is_article_entry(e: &Entry) -> bool {
+    (e.namespace == 'A' || e.namespace == 'C')
+        && e.mime != 0xFFFF
+        && e.mime < 0xFFFD
+        && !e.title.is_empty()
 }
 
 fn parse_dirent(buf: &[u8]) -> Result<Entry> {
@@ -499,10 +800,9 @@ pub fn search<S: Source>(z: &mut Zim<S>, query: &str, limit: usize) -> Result<Ve
     if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let entries = z.scan_entries()?;
+    let entries = z.scan_entries_limit(60_000)?;
     let mut hits = Vec::new();
-    let scan = std::cmp::min(entries.len(), 60_000);
-    for (i, e) in entries.into_iter().take(scan).enumerate() {
+    for (i, e) in entries.into_iter().enumerate() {
         if e.mime == 0xFFFF || e.mime >= 0xFFFD {
             continue;
         }
@@ -653,6 +953,11 @@ fn tag_end(b: &[u8], start: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+fn plain_name(name: &str) -> bool {
+    let mut c = name.chars();
+    c.next().is_some_and(|f| f.is_ascii_lowercase()) && c.all(|x| x.is_ascii_alphanumeric())
 }
 
 fn tag_name(raw: &str) -> String {
@@ -810,10 +1115,14 @@ fn decode_entities(s: &str) -> String {
     out
 }
 pub fn article_html(html: &str) -> String {
+    article_html_with(html, &mut |_| None)
+}
+
+pub fn article_html_with(html: &str, image: &mut dyn FnMut(&str) -> Option<String>) -> String {
     let fragment = content_inner(html)
         .or_else(|| element_inner(html, "body"))
         .unwrap_or(html);
-    let cleaned = scrub_fragment(fragment);
+    let cleaned = scrub_fragment(fragment, image);
     format!("{ARTICLE_HEAD}\n<body>{cleaned}</body></html>")
 }
 
@@ -836,7 +1145,7 @@ blockquote { margin: 1em 0; padding: .2em 0 .2em 1em; border-left: 3px solid #4a
 table { border-collapse: collapse; margin: .8em 0; max-width: 100%; font-size: .9em; }
 th, td { border: 1px solid #2c2e33; padding: .35em .55em; vertical-align: top; text-align: left; }
 th { background: #18191c; }
-img { max-width: 100%; height: auto; }
+img { max-width: 100%; height: auto; background: #e9eaec; }
 code, pre { font: 13px/1.45 ui-monospace, Menlo, monospace; background: #18191c; }
 pre { padding: 10px; overflow-x: auto; white-space: pre-wrap; }
 sup, sub { font-size: .7em; }
@@ -915,7 +1224,7 @@ fn matching_close(html: &str, start: usize, name: &str) -> Option<usize> {
     None
 }
 
-fn scrub_fragment(html: &str) -> String {
+fn scrub_fragment(html: &str, image: &mut dyn FnMut(&str) -> Option<String>) -> String {
     let b = html.as_bytes();
     let mut out = String::with_capacity(html.len());
     let mut i = 0usize;
@@ -942,7 +1251,7 @@ fn scrub_fragment(html: &str) -> String {
         let closing = raw.starts_with('/');
         let self_closing = raw.trim_end().ends_with('/');
         let name = tag_name(raw);
-        if name.is_empty() {
+        if !plain_name(&name) {
             i = end + 1;
             continue;
         }
@@ -973,11 +1282,12 @@ fn scrub_fragment(html: &str) -> String {
                 | "source"
                 | "track"
         ) {
-            if !self_closing && !closing {
+            let void = matches!(name.as_str(), "input" | "link" | "meta" | "base" | "source" | "track" | "embed");
+            if !self_closing && !closing && !void {
                 if let Some(close) = skip_element(html, end + 1, &name) {
                     i = close;
                 } else {
-                    i = end + 1;
+                    break;
                 }
             } else {
                 i = end + 1;
@@ -985,6 +1295,19 @@ fn scrub_fragment(html: &str) -> String {
             continue;
         }
         if name == "img" {
+            if !closing {
+                let a = attrs(raw, "img");
+                let src = a.iter().find(|(k, _)| k == "src").map(|(_, v)| v.as_str());
+                if let Some(uri) = src.and_then(|s| image(s)).filter(|u| safe_image_uri(u)) {
+                    out.push_str(&format!("<img src=\"{uri}\""));
+                    for (k, v) in &a {
+                        if matches!(k.as_str(), "alt" | "width" | "height" | "class") {
+                            out.push_str(&format!(" {k}=\"{}\"", escape_attr(v)));
+                        }
+                    }
+                    out.push('>');
+                }
+            }
             i = end + 1;
             continue;
         }
@@ -1096,8 +1419,26 @@ fn attrs(raw: &str, name: &str) -> Vec<(String, String)> {
     out
 }
 
+fn base64(b: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for k in 0..4 {
+            out.push(if k <= c.len() { T[(n >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
+        }
+    }
+    out
+}
+
+fn safe_image_uri(u: &str) -> bool {
+    u.strip_prefix("data:image/")
+        .is_some_and(|r| r.bytes().all(|c| c.is_ascii_alphanumeric() || b"+/=;,.-".contains(&c)))
+}
+
 fn escape_attr(v: &str) -> String {
-    v.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+    decode_entities(v)
+        .replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
 }
 
 fn clean_tag(raw: &str, name: &str, self_closing: bool) -> Option<String> {
@@ -1178,6 +1519,71 @@ pub fn internal_link(href: &str) -> Option<String> {
         None
     } else {
         Some(url)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Mem(Vec<u8>);
+
+    impl Source for Mem {
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+
+        fn read_at(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
+            let off = offset as usize;
+            Ok(self.0[off..off + len].to_vec())
+        }
+    }
+
+    fn zim_with_uncompressed_cluster() -> Zim<Mem> {
+        let mut b = vec![0u8; 124];
+        b[0..8].copy_from_slice(&100u64.to_le_bytes());
+        b[100] = 0x00;
+        b[101..105].copy_from_slice(&12u32.to_le_bytes());
+        b[105..109].copy_from_slice(&17u32.to_le_bytes());
+        b[109..113].copy_from_slice(&23u32.to_le_bytes());
+        b[113..118].fill(0xaa);
+        b[118..124].fill(0xbb);
+        Zim {
+            src: Mem(b),
+            header: Header {
+                major: 6,
+                minor: 0,
+                article_count: 0,
+                cluster_count: 1,
+                url_ptr_pos: 0,
+                title_ptr_pos: 0,
+                cluster_ptr_pos: 0,
+                mime_list_pos: 0,
+                main_page: u32::MAX,
+                checksum_pos: 0,
+            },
+            mimes: Vec::new(),
+            cache: None,
+            title_order: TitleOrder::Ptrs,
+        }
+    }
+
+    #[test]
+    fn blob_len_reads_the_offset_table_without_copying() {
+        let mut z = zim_with_uncompressed_cluster();
+        assert_eq!(z.blob_len(0, 0).unwrap(), 5);
+        assert_eq!(z.blob_len(0, 1).unwrap(), 6);
+        assert!(matches!(z.blob_len(0, 2), Err(Error::OutOfRange)));
+    }
+
+    #[test]
+    fn blob_len_and_read_blob_agree() {
+        let mut z = zim_with_uncompressed_cluster();
+        for blob in [0u32, 1] {
+            let len = z.blob_len(0, blob).unwrap();
+            let bytes = z.read_blob(0, blob).unwrap();
+            assert_eq!(bytes.len(), len);
+        }
     }
 }
 

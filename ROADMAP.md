@@ -28,11 +28,18 @@ each item ships when it works and has been tested on every supported system.
   checked both ways.
 - **Updated medical sources** where a newer free edition exists.
 
-## v0.2 — Full
+## v0.2 — Full (next release)
 
-- All of English Wikipedia with images (about 127 GB).
-- A street-level map of the whole planet (about 130 GB), with every named street searchable.
-- Needs a large external drive; the Lite edition stays the default.
+- The Full edition: the Lite packs plus all of English Wikipedia with its images
+  (about 127 GB) and a street-level map of the whole planet (about 130 GB) — about
+  280 GB in all.
+- Articles show their pictures: the full Wikipedia's images, and the pictures in the
+  repair and sustainability guides.
+- The map opens on "World — street level" (the whole planet down to street detail),
+  and every named street is searchable by typing the start of its name. No satellite
+  imagery, Street View, routing or house numbers.
+- Installed with the Full edition command (see the README). The Lite edition stays the
+  default. Needs a large external drive.
 
 ## Later, if they can be done well
 

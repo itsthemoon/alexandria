@@ -3,14 +3,20 @@ use alexandria_core::{
     Entry, Manifest, VerifiedFile, CHUNK,
 };
 use alexandria_pmtiles::Pmtiles;
+use alexandria_search::streets::Streets;
 use alexandria_zim::{html_to_text, search, Source, Zim};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
+mod roads;
+
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  alex keygen <seed-file> <pub-file>\n  alex hash <file>\n  alex manifest <dir> <release> <date>\n  alex sign <dir> <seed-file>\n  alex keys <dir> <root-seed-file> <release-pub-hex>...\n  alex verify <dir> <root-pub-hex>\n  alex article <dir> <pub-key-hex> <url>\n  alex list <dir> <pub-key-hex>\n  alex ask <dir> <pub-key-hex> <question>\n  alex sources <dir> <pub-key-hex> <question>\n  alex tile <dir> <pub-key-hex> <z> <x> <y> <out>\n  alex index <pack.zim> <out.search.db> [--lead <chars>]\n  alex index-library <dir> <root-pub-hex>\n  alex search <dir> <pub-key-hex> <query>"
+        "usage:\n  alex keygen <seed-file> <pub-file>\n  alex hash <file>\n  alex hash-stream < <file> > <file.hashes>\n  alex manifest <dir> <release> <date>\n  alex sign <dir> <seed-file>\n  alex keys <dir> <root-seed-file> <release-pub-hex>...\n  alex verify <dir> <root-pub-hex>\n  alex article <dir> <pub-key-hex> <url>\n  alex list <dir> <pub-key-hex>\n  alex ask <dir> <pub-key-hex> <question>\n  alex sources <dir> <pub-key-hex> <question>\n  alex tile <dir> <pub-key-hex> <z> <x> <y> <out>\n  alex index <pack.zim> <out.search.db> [--lead <chars>]\n  alex index-library <dir> <root-pub-hex>\n  alex search <dir> <pub-key-hex> <query>\n  alex streets <dir> <pub-key-hex> [--near lat,lon] [--limit n] <query>
+  alex roads-build <in.osm.pbf> <out.roads>
+  alex route <dir> <pub-key-hex> <lat,lon> <lat,lon> [--json]
+  alex route-file <file.roads> <lat,lon> <lat,lon> [--json]"
     );
     exit(2)
 }
@@ -23,6 +29,7 @@ fn main() {
     let r = match args[1].as_str() {
         "keygen" if args.len() == 4 => keygen(&args[2], &args[3]),
         "hash" if args.len() == 3 => hash_cmd(&args[2]),
+        "hash-stream" if args.len() == 2 => hash_stream_cmd(),
         "manifest" if args.len() == 5 => manifest_cmd(&args[2], &args[3], &args[4]),
         "sign" if args.len() == 4 => sign_cmd(&args[2], &args[3]),
         "verify" if args.len() == 4 => verify_cmd(&args[2], &args[3]),
@@ -41,6 +48,16 @@ fn main() {
             Err(_) => usage(),
         },
         "search" if args.len() >= 5 => search_cmd(&args[2], &args[3], &args[4..].join(" ")),
+        "streets" if args.len() >= 5 => streets_cmd(&args[2], &args[3], &args[4..]),
+        "roads-build" if args.len() == 4 => roads_build_cmd(&args[2], &args[3]),
+        "route" if args.len() == 6 || args.len() == 7 => {
+            let json = args.len() == 7 && args[6] == "--json";
+            route_cmd(&args[2], &args[3], &args[4], &args[5], json)
+        }
+        "route-file" if args.len() == 5 || args.len() == 6 => {
+            let json = args.len() == 6 && args[5] == "--json";
+            route_file_cmd(&args[2], &args[3], &args[4], json)
+        }
         _ => usage(),
     };
     if let Err(e) = r {
@@ -110,6 +127,14 @@ fn hash_cmd(file: &str) -> alexandria_core::Result<()> {
     Ok(())
 }
 
+fn hash_stream_cmd() -> alexandria_core::Result<()> {
+    use std::io::Write;
+    let (hashes, size) = alexandria_core::hash_reader(&mut std::io::stdin().lock(), CHUNK)?;
+    std::io::stdout().write_all(&hashes)?;
+    eprintln!("{size}");
+    Ok(())
+}
+
 fn manifest_cmd(dir: &str, release: &str, date: &str) -> alexandria_core::Result<()> {
     let dir = Path::new(dir);
     let mut files: Vec<(PathBuf, String)> = Vec::new();
@@ -165,6 +190,9 @@ fn collect_files(
         }
         let p = e.path();
         let name = e.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
         if ft.is_dir() {
             if name.eq_ignore_ascii_case("Personal") {
                 continue;
@@ -238,16 +266,21 @@ fn open_index(d: &Path, m: &Manifest, zim: &Entry) -> Option<alexandria_search::
 fn search_cmd(dir: &str, pub_hex: &str, q: &str) -> alexandria_core::Result<()> {
     let d = Path::new(dir);
     let m = open_manifest(d, pub_hex)?;
-    let zim = m
-        .entries
-        .iter()
-        .find(|e| e.path.ends_with(".zim"))
-        .ok_or_else(|| alexandria_core::Error::NotAFile("no .zim in manifest".into()))?;
     let other = |e: String| alexandria_core::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e));
-    let db = open_index(d, &m, zim).ok_or_else(|| {
-        alexandria_core::Error::NotAFile("no search index: run `alex index-library` first".into())
-    })?;
-    let hits = alexandria_search::query(db.conn(), q).map_err(other)?;
+    let mut hits = Vec::new();
+    let mut indexed = 0;
+    for zim in m.entries.iter().filter(|e| e.path.ends_with(".zim")) {
+        if let Some(db) = open_index(d, &m, zim) {
+            indexed += 1;
+            hits.extend(alexandria_search::query(db.conn(), q).map_err(other)?);
+        }
+    }
+    if indexed == 0 {
+        return Err(alexandria_core::Error::NotAFile(
+            "no search index: run `alex index-library` first".into(),
+        ));
+    }
+    hits.sort_by_key(|h| !h.title.eq_ignore_ascii_case(q.trim()));
     for h in &hits {
         println!("{}\t{}", h.title, h.url);
     }
@@ -311,6 +344,14 @@ fn index_library_cmd(dir: &str, pub_hex: &str) -> alexandria_core::Result<()> {
     Ok(())
 }
 
+const INDEX_SCHEMA_VERSION: i64 = 1;
+
+fn remove_db_files(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+}
+
 fn build_index<S: Source>(
     z: &mut Zim<S>,
     out_path: &Path,
@@ -318,28 +359,47 @@ fn build_index<S: Source>(
     ocr: Option<&alexandria_search::ocr::Ocr>,
     pack_bytes: u64,
 ) -> alexandria_core::Result<(usize, usize)> {
-    let mut entries = z.scan_entries_up_to(80_000_000).map_err(zim_err)?;
-    let total = entries.len();
-    entries.sort_by_key(|e| (e.cluster, e.blob));
+    let total = z.header.article_count as usize;
     let mut conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
-    let done = conn
-        .query_row(
-            "SELECT seen, kept FROM progress WHERE total = ?1 AND bytes = ?2",
-            rusqlite::params![total as i64, pack_bytes as i64],
-            |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)),
-        )
-        .ok();
+    let (done, stale) = match conn.query_row(
+        "SELECT schema FROM progress LIMIT 1",
+        [],
+        |r| r.get::<_, i64>(0),
+    ) {
+        Ok(v) if v == INDEX_SCHEMA_VERSION => (
+            conn.query_row(
+                "SELECT seen, kept FROM progress WHERE total = ?1 AND bytes = ?2 ORDER BY seen DESC LIMIT 1",
+                rusqlite::params![total as i64, pack_bytes as i64],
+                |r| Ok((r.get::<_, i64>(0)? as usize, r.get::<_, i64>(1)? as usize)),
+            )
+            .ok(),
+            false,
+        ),
+        Ok(_) => (None, true),
+        Err(_) => (
+            None,
+            conn.query_row("SELECT COUNT(*) FROM progress", [], |r| r.get::<_, i64>(0))
+                .map(|n| n > 0)
+                .unwrap_or(false),
+        ),
+    };
     if done.is_none() {
         drop(conn);
-        let _ = std::fs::remove_file(out_path);
+        remove_db_files(out_path);
+        if stale {
+            eprintln!("      index schema version mismatch; rebuilding from scratch");
+        }
         conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
     }
     conn.execute_batch(
-        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY;
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY;
+        PRAGMA wal_autocheckpoint=0;
         CREATE TABLE IF NOT EXISTS progress(seen INTEGER NOT NULL, kept INTEGER NOT NULL,
-        total INTEGER NOT NULL, bytes INTEGER NOT NULL);
-        CREATE VIRTUAL TABLE IF NOT EXISTS articles USING fts5(title, body, url UNINDEXED,
-        tokenize='unicode61 remove_diacritics 2');",
+        total INTEGER NOT NULL, bytes INTEGER NOT NULL, schema INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE VIRTUAL TABLE IF NOT EXISTS articles USING fts5(title, body, content='',
+        tokenize='unicode61 remove_diacritics 2');
+        CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL);",
     )
     .map_err(sqlite_err)?;
     let (mut seen, mut inserted) = done.unwrap_or((0, 0));
@@ -352,16 +412,30 @@ fn build_index<S: Source>(
         .and_then(|v| v.parse().ok());
     #[cfg(not(debug_assertions))]
     let stop_after: Option<usize> = None;
-    let mut tx = conn.unchecked_transaction().map_err(sqlite_err)?;
-    for (i, e) in entries.iter().enumerate().skip(seen) {
+    let mut candidates: Vec<(String, u32, u32, u32, u32)> = Vec::new();
+    for i in 0..total {
+        let Ok(e) = z.entry(i as u32) else { continue };
         if e.mime == 0xFFFF || e.mime >= 0xFFFD || e.title.is_empty() {
             continue;
         }
-        let mime = z.mime(e.mime).unwrap_or("").to_string();
-        if !matches!(mime.as_str(), "text/html" | "text/plain" | "application/pdf") {
+        if !matches!(z.mime(e.mime).unwrap_or(""), "text/html" | "text/plain" | "application/pdf") {
             continue;
         }
-        let Ok(raw) = z.read_entry_blob(e) else { continue };
+        candidates.push((e.title, i as u32, e.cluster, e.blob, 0));
+    }
+    candidates.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (rank, c) in candidates.iter_mut().enumerate() {
+        c.4 = rank as u32;
+    }
+    candidates.sort_by(|a, b| (a.2, a.3).cmp(&(b.2, b.3)).then(a.1.cmp(&b.1)));
+    let ordered: Vec<(u32, u32)> = candidates.into_iter().map(|c| (c.1, c.4)).collect();
+
+    let mut tx = conn.unchecked_transaction().map_err(sqlite_err)?;
+    for (i, (url_idx, rank)) in ordered.into_iter().enumerate().skip(seen) {
+        seen = i + 1;
+        let Ok(e) = z.entry(url_idx) else { continue };
+        let mime = z.mime(e.mime).unwrap_or("").to_string();
+        let Ok(raw) = z.read_entry_blob(&e) else { continue };
         let (title, text) = match mime.as_str() {
             "text/html" => (e.title.clone(), html_to_text(&String::from_utf8_lossy(&raw))),
             "text/plain" => (e.title.clone(), String::from_utf8_lossy(&raw).to_string()),
@@ -381,20 +455,27 @@ fn build_index<S: Source>(
             None => text,
         };
         tx.execute(
-            "INSERT INTO articles(title, body, url) VALUES (?1, ?2, ?3)",
-            rusqlite::params![title, text, e.url],
+            "INSERT INTO docs(id, title, url) VALUES (?1, ?2, ?3)",
+            rusqlite::params![rank as i64, title.as_str(), e.url.as_str()],
+        )
+        .map_err(sqlite_err)?;
+        tx.execute(
+            "INSERT INTO articles(rowid, title, body) VALUES (?1, ?2, ?3)",
+            rusqlite::params![rank as i64, title, text],
         )
         .map_err(sqlite_err)?;
         inserted += 1;
-        seen = i + 1;
         let stop = stop_after.map(|n| inserted >= n).unwrap_or(false);
         if inserted % 1000 == 0 || stop {
+            tx.execute("DELETE FROM progress", []).map_err(sqlite_err)?;
             tx.execute(
-                "INSERT OR REPLACE INTO progress(seen, kept, total, bytes) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![seen as i64, inserted as i64, total as i64, pack_bytes as i64],
+                "INSERT INTO progress(seen, kept, total, bytes, schema) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![seen as i64, inserted as i64, total as i64, pack_bytes as i64, INDEX_SCHEMA_VERSION],
             )
             .map_err(sqlite_err)?;
             tx.commit().map_err(sqlite_err)?;
+            conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+                .map_err(sqlite_err)?;
             if stop {
                 return Err(alexandria_core::Error::NotAFile("stopped for test".into()));
             }
@@ -402,10 +483,21 @@ fn build_index<S: Source>(
             tx = conn.unchecked_transaction().map_err(sqlite_err)?;
         }
     }
+    tx.execute("DELETE FROM meta", []).map_err(sqlite_err)?;
+    tx.execute("INSERT INTO meta(key, value) VALUES ('order', 'title')", [])
+        .map_err(sqlite_err)?;
+    tx.execute(
+        "INSERT INTO meta(key, value) VALUES ('articles', ?1)",
+        [inserted as i64],
+    )
+    .map_err(sqlite_err)?;
     tx.execute("DELETE FROM progress", []).map_err(sqlite_err)?;
     tx.commit().map_err(sqlite_err)?;
-    conn.execute_batch("INSERT INTO articles(articles) VALUES('optimize'); VACUUM;")
-        .map_err(sqlite_err)?;
+    conn = rusqlite::Connection::open(out_path).map_err(sqlite_err)?;
+    conn.execute_batch(
+        "PRAGMA temp_store=FILE; INSERT INTO articles(articles) VALUES('optimize'); PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;",
+    )
+    .map_err(sqlite_err)?;
     Ok((inserted, total))
 }
 
@@ -511,22 +603,67 @@ fn list_cmd(dir: &str, pub_hex: &str) -> alexandria_core::Result<()> {
 fn article_cmd(dir: &str, pub_hex: &str, url: &str) -> alexandria_core::Result<()> {
     let d = Path::new(dir);
     let m = open_manifest(d, pub_hex)?;
-    let entry = m
-        .entries
-        .iter()
-        .find(|e| e.path.ends_with(".zim"))
-        .ok_or_else(|| alexandria_core::Error::NotAFile("no .zim in manifest".into()))?
-        .clone();
+    let packs: Vec<Entry> = m.entries.iter().filter(|e| e.path.ends_with(".zim")).cloned().collect();
+    let mut tried = 0;
+    for entry in &packs {
+        let vf = VerifiedFile::open_in(d, entry, m.chunk)?;
+        let mut z = Zim::open(vf).map_err(|e| alexandria_core::Error::BadPath(format!("{}: {e}", entry.path)))?;
+        tried += 1;
+        let Ok(idx) = z.find_index('C', url).or_else(|_| z.find_index('A', url)) else {
+            continue;
+        };
+        let body = z
+            .read_article(idx)
+            .map_err(|e| alexandria_core::Error::BadPath(format!("{url}: {e}")))?;
+        println!("{}", String::from_utf8_lossy(&body));
+        return Ok(());
+    }
+    Err(alexandria_core::Error::NotAFile(format!("{url} is in none of the {tried} packs")))
+}
+
+fn streets_cmd(dir: &str, pub_hex: &str, rest: &[String]) -> alexandria_core::Result<()> {
+    let mut near = None;
+    let mut limit = 8usize;
+    let mut words = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--near" => {
+                i += 1;
+                let parts: Vec<f32> = rest
+                    .get(i)
+                    .map(|v| v.split(',').filter_map(|n| n.parse().ok()).collect())
+                    .unwrap_or_default();
+                if parts.len() == 2 {
+                    near = Some((parts[0], parts[1]));
+                }
+            }
+            "--limit" => {
+                i += 1;
+                if let Some(n) = rest.get(i).and_then(|v| v.parse().ok()) {
+                    limit = n;
+                }
+            }
+            w => words.push(w.to_string()),
+        }
+        i += 1;
+    }
+    let query = words.join(" ");
+    let d = Path::new(dir);
+    let m = open_manifest(d, pub_hex)?;
+    let Some(entry) = m.entries.iter().find(|e| e.path == "streets.txt").cloned() else {
+        return Ok(());
+    };
     let vf = VerifiedFile::open_in(d, &entry, m.chunk)?;
-    let mut z = Zim::open(vf).map_err(|e| alexandria_core::Error::BadPath(format!("zim: {e}")))?;
-    let idx = z
-        .find_index('C', url)
-        .or_else(|_| z.find_index('A', url))
-        .map_err(|e| alexandria_core::Error::BadPath(format!("{url}: {e}")))?;
-    let body = z
-        .read_article(idx)
-        .map_err(|e| alexandria_core::Error::BadPath(format!("{url}: {e}")))?;
-    println!("{}", String::from_utf8_lossy(&body));
+    let s = Streets::open_verified(vf, m.chunk).ok_or_else(|| {
+        alexandria_core::Error::NotAFile(format!("no street index at {}", entry.path))
+    })?;
+    for (name, lat, lon, place) in s.find(&query, near, limit) {
+        match place {
+            Some(p) => println!("{name}\t{lat}\t{lon}\t{p}"),
+            None => println!("{name}\t{lat}\t{lon}"),
+        }
+    }
     Ok(())
 }
 
@@ -538,14 +675,45 @@ fn verified_copy(root: &Path, entry: &Entry, chunk: u64) -> alexandria_core::Res
 
 fn ask_sources(d: &Path, m: &Manifest, question: &str) -> alexandria_core::Result<Vec<(String, String, String)>> {
     let zims: Vec<Entry> = m.entries.iter().filter(|e| e.path.ends_with(".zim")).cloned().collect();
-    let mut all = Vec::new();
-    for zim in &zims {
-        if let Some(db) = open_index(d, m, zim) {
-            if let Ok(found) = alexandria_search::ask_candidates(db.conn(), &zim.path, question) {
-                all.extend(found.into_iter().map(|p| (zim.path.clone(), p)));
+    let mut all: Vec<(String, alexandria_search::Pick)> = Vec::new();
+    std::thread::scope(|s| {
+        let handles: Vec<_> = zims
+            .iter()
+            .map(|zim| {
+                s.spawn(move || -> Vec<(String, alexandria_search::Pick)> {
+                    let Some(db) = open_index(d, m, zim) else { return Vec::new() };
+                    let Ok(vf) = VerifiedFile::open_in(d, zim, m.chunk) else { return Vec::new() };
+                    let Ok(z) = Zim::open(vf) else { return Vec::new() };
+                    let z = std::sync::Mutex::new(z);
+                    let ocr = ocr_in(d, m, &zim.path);
+                    let found = alexandria_search::ask_candidates(db.conn(), &zim.path, question, &|url| {
+                        let (raw, mime, e_url) = {
+                            let mut z = z.lock().unwrap();
+                            let idx = z.find_index('C', url).or_else(|_| z.find_index('A', url)).ok()?;
+                            let e = z.resolve(idx).ok()?;
+                            let mime = z.mime(e.mime).map(str::to_string);
+                            let raw = z.read_entry_blob(&e).ok()?;
+                            (raw, mime, e.url)
+                        };
+                        if mime.as_deref() == Some("application/pdf") {
+                            match alexandria_search::pdf_text_only(&raw).filter(|t| t.split_whitespace().count() >= 20) {
+                                Some(text) => Some(text),
+                                None => ocr.as_ref().and_then(|o| o.text(&e_url).map(str::to_string)),
+                            }
+                        } else {
+                            Some(html_to_text(&String::from_utf8_lossy(&raw)))
+                        }
+                    });
+                    found.unwrap_or_default().into_iter().map(|p| (zim.path.clone(), p)).collect()
+                })
+            })
+            .collect();
+        for h in handles {
+            if let Ok(v) = h.join() {
+                all.extend(v);
             }
         }
-    }
+    });
     let mut picked: Vec<(String, String)> = alexandria_search::pick_sources(all, 3, question).into_iter().map(|(z, p)| (z, p.url)).collect();
     if picked.is_empty() {
         if let Some(zim) = zims.first() {
@@ -693,4 +861,78 @@ fn tile_cmd(
     fs::write(out, &bytes)?;
     println!("wrote {out} ({} bytes)", bytes.len());
     Ok(())
+}
+
+fn roads_err(e: String) -> alexandria_core::Error {
+    alexandria_core::Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+}
+
+fn parse_latlon(s: &str) -> alexandria_core::Result<(f64, f64)> {
+    let mut parts = s.split(',');
+    let lat = parts
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
+        .ok_or_else(|| alexandria_core::Error::BadNumber(s.into()))?;
+    let lon = parts
+        .next()
+        .and_then(|v| v.parse::<f64>().ok())
+        .ok_or_else(|| alexandria_core::Error::BadNumber(s.into()))?;
+    Ok((lat, lon))
+}
+
+fn print_route(route: &alexandria_roads::Route, json: bool) {
+    if json {
+        println!("{}", serde_json::to_string(route).unwrap_or_default());
+        return;
+    }
+    println!("distance: {:.1} km", route.distance_m / 1000.0);
+    println!("duration: {:.1} min", route.duration_s / 60.0);
+    for (i, s) in route.steps.iter().enumerate() {
+        let dist = if s.distance_m >= 1000.0 {
+            format!("{:.1} km", s.distance_m / 1000.0)
+        } else {
+            format!("{:.0} m", s.distance_m)
+        };
+        println!("  {}. {} ({})", i + 1, s.text, dist);
+    }
+}
+
+fn roads_build_cmd(in_p: &str, out_p: &str) -> alexandria_core::Result<()> {
+    roads::build(in_p, out_p).map_err(roads_err)?;
+    println!("wrote {out_p}");
+    Ok(())
+}
+
+fn route_with(vf: VerifiedFile, from: (f64, f64), to: (f64, f64), json: bool) -> alexandria_core::Result<()> {
+    let mut r = alexandria_roads::Roads::open(vf).map_err(roads_err)?;
+    let route = r.route(from, to).map_err(roads_err)?;
+    print_route(&route, json);
+    Ok(())
+}
+
+fn route_cmd(dir: &str, pub_hex: &str, from: &str, to: &str, json: bool) -> alexandria_core::Result<()> {
+    let d = Path::new(dir);
+    let m = open_manifest(d, pub_hex)?;
+    let entry = m
+        .entries
+        .iter()
+        .find(|e| e.path == "roads-us.roads")
+        .cloned()
+        .ok_or_else(|| alexandria_core::Error::NotAFile("no roads-us.roads in this library".into()))?;
+    let vf = VerifiedFile::open_in(d, &entry, m.chunk)?;
+    route_with(vf, parse_latlon(from)?, parse_latlon(to)?, json)
+}
+
+fn route_file_cmd(file: &str, from: &str, to: &str, json: bool) -> alexandria_core::Result<()> {
+    let p = Path::new(file);
+    let size = fs::metadata(p)?.len();
+    let hashes = alexandria_core::write_hashes(p, CHUNK)?;
+    let raw = fs::read(&hashes)?;
+    let entry = Entry {
+        hashes_sha256: sha256(&raw),
+        size,
+        path: p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "roads".into()),
+    };
+    let vf = VerifiedFile::open(p, &entry, CHUNK)?;
+    route_with(vf, parse_latlon(from)?, parse_latlon(to)?, json)
 }

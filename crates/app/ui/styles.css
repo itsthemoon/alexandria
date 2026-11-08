@@ -166,3 +166,28 @@ body.busy .col { background: rgba(0,0,0,.84); box-shadow: 0 0 90px 50px rgba(0,0
 .pane { position: relative; }
 body.busy .pane { background: rgba(0,0,0,.84); box-shadow: 0 0 90px 50px rgba(0,0,0,.84); min-height: 100%; }
 @media (max-width: 980px) { .translategrid { grid-template-columns: 1fr; } }
+#directions { position: absolute; top: 120px; left: 14px; z-index: 4; width: 320px; display: flex; flex-direction: column; gap: 7px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.5); }
+.dirtitle { font-size: 12px; font-weight: 650; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+.dirfield { position: relative; }
+.dirfield input { width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--field); color: var(--text); outline: none; font-size: 14px; }
+.dirfield input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.dirfield input::placeholder { color: #8f9298; }
+.dirresults { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,.5); overflow: hidden; display: none; color: var(--text); }
+.dirresults.on { display: block; }
+.dirresults div { padding: 8px 12px; font-size: 13px; cursor: pointer; border-top: 1px solid var(--line); }
+.dirresults div:first-child { border-top: 0; }
+.dirresults div:hover { background: var(--hover); }
+.dirresults .empty { color: var(--muted); cursor: default; }
+.dirbar { display: flex; gap: 8px; }
+.dirbtn { min-height: 40px; padding: 8px 14px; font-size: 14px; }
+.dirbtn.pill { flex: 1; }
+.dirbtn.primary { flex: 1; }
+#dirout { max-height: 300px; overflow-y: auto; }
+.dirsum { font-size: 14px; font-weight: 600; color: var(--text); padding: 2px 0 6px; }
+.dirsteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.dirstep { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--text); font-size: 13px; }
+.dirstep:hover { background: var(--hover); }
+.dirnum { flex: 0 0 auto; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-soft); color: var(--accent-text); display: grid; place-items: center; font-size: 11px; font-weight: 700; }
+.dirtext { flex: 1; min-width: 0; }
+.dirdist { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.dirempty { color: var(--muted); font-size: 13px; padding: 2px 0; }

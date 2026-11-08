@@ -1,6 +1,6 @@
 [package]
 name = "alexandria-app"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -15,4 +15,8 @@ alexandria-search = { path = "../search" }
 alexandria-core = { path = "../core" }
 alexandria-zim = { path = "../zim" }
 alexandria-pmtiles = { path = "../pmtiles" }
+alexandria-roads = { path = "../roads" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }

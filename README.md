@@ -7,12 +7,12 @@ all stored on your own computer or drive, and all working with **no internet at 
 Built for power cuts, travel, bad connections and emergencies. No account, no tracking,
 nothing sent anywhere.
 
-> **Preview release (v0.1.1).** It works, it is tested, and it has rough edges. Read
+> **Preview release (v0.2.0).** It works, it is tested, and it has rough edges. Read
 > [Known limits](#known-limits) before you rely on it for anything important.
 
 ## Install
 
-You need about **12 GB free** (8 GB of library plus 4 GB for search) and an internet
+Lite needs about **12 GB free** (8 GB of library plus 4 GB for search) and an internet
 connection for the download. After that, Alexandria never goes online.
 
 **Mac or Linux** — open Terminal and paste:
@@ -55,6 +55,42 @@ computer will warn you the first time:
 The install command avoids these warnings because files downloaded from a terminal are not
 flagged.
 
+### The Full edition
+
+The Full edition is everything in Lite plus all of English Wikipedia with its images
+(about 127 GB) and a street-level map of the whole planet (about 139 GB) — about
+280 GB in all. It needs a large external drive: when the installer asks where the
+library should go, type the drive's folder (for example `/Volumes/MyDrive` on a Mac). It
+checks that there is enough room first (the library, plus about a quarter of that again
+for search, plus 2 GB). Building the search index for all of Wikipedia takes a few hours
+after the download; if it is interrupted, running the install command again picks up
+where it stopped.
+
+**Mac or Linux** — open Terminal and paste:
+
+```
+curl -fsSL https://itsthemoon.github.io/alexandria/install.sh | ALEXANDRIA_EDITION=full bash
+```
+
+To choose the folder without being asked, add it to the command, for example
+`ALEXANDRIA_EDITION=full ALEXANDRIA_DIR=/Volumes/MyDrive bash`.
+
+On a Mac, the first time Alexandria opens a library on an external drive, macOS asks
+whether it may access files on a removable volume. Click **Allow**; until you do, the app
+waits on "Opening...".
+
+**Windows** — open PowerShell and paste:
+
+```
+$env:ALEXANDRIA_EDITION='full'; irm https://itsthemoon.github.io/alexandria/install.ps1 | iex
+```
+
+Articles now show their pictures — from the full Wikipedia, and from the repair and
+sustainability guides. The two big files download in parts, and if the download stops
+it resumes at the part it reached. Building search for this much content takes hours,
+and that also resumes. The Lite command above is still the default and is the right
+choice for most computers.
+
 ## What's inside (Lite edition)
 
 | Collection | What it is | Size |
@@ -67,8 +103,8 @@ flagged.
 | World map | countries, cities and coastlines (overview zoom) | 15 MB |
 | LFM3 1.7B | the local AI model for Ask and Translate | 1.0 GB |
 
-A **Full edition** (all of English Wikipedia with images and a street-level map of the
-whole planet, about 280 GB) is planned for v0.2.
+The **Full edition** adds all of English Wikipedia with images and a street-level map of
+the whole planet, about 280 GB. See [The Full edition](#the-full-edition) above.
 
 ## Using it
 
@@ -102,8 +138,8 @@ of the content.
 
 Signing uses two keys, so no single person or leak can quietly take over:
 
-- a **root key**, kept offline by the maintainer, which only signs the list of allowed
-  release keys (`KEYS`);
+- a **root key**, kept offline by the maintainer, which signs the list of allowed
+  release keys (`KEYS`) and can also sign a library itself;
 - a **release key**, held by GitHub and usable only after a maintainer approves a release,
   which signs each library.
 
@@ -112,8 +148,9 @@ the content is true, that a computer with malware is safe, or that a stolen key 
 sign a bad release.
 
 Two files are made on your computer rather than signed by us: the search index (built
-during setup from verified files) and the working copy of the AI model. Both are checked
-when they are written, not every time they are read.
+during setup from verified files) and the working copy of the AI model. The index is only used to find and order results:
+every title and excerpt you see is read from the verified library. The model copy is
+checked against the signed hashes every time it is used.
 
 ## Known limits
 
@@ -125,7 +162,8 @@ when they are written, not every time they are read.
   Spanish. Lingala and other low-resource languages are not offered, because every model
   we tested got them wrong.
 - **The Lite map stops at country and city level.** Street maps come with the Full edition.
-  Map search finds places and street names, not house numbers.
+  Street search matches the start of a name and labels each result with the nearest town and
+  country (for example `Avenue des Champs-Élysées · Paris, FR`); it does not cover house numbers.
 - **Text read from scans.** About 1 in 10 of the survival guides are scanned images with no
   text inside. Their text is read by recognition when the library is built, and ships signed
   with it, so they can be searched and read like the rest. Recognition is good but not perfect:
@@ -163,7 +201,7 @@ How to help: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Alexandria's code is Apache-2.0. The content keeps its own licenses: Wikipedia, WikiMed
 and Appropedia (CC BY-SA), iFixit (CC BY-NC-SA), map data © OpenStreetMap contributors
-(ODbL) via Protomaps, offline archives packaged by Kiwix. The LFM3 model is under the
+(ODbL) via Protomaps, US driving directions © OpenStreetMap contributors (ODbL), street names and places from Overture Maps, offline archives packaged by Kiwix. The LFM3 model is under the
 LFM Open License v1.0 (free to use unless your company earns over $10M a year).
 
 Alexandria is an independent project. It is not affiliated with or endorsed by the Wikimedia

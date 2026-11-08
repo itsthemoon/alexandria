@@ -50,7 +50,7 @@ if "$ALEX" list "$TMP/lib" "$PUB" >/dev/null 2>&1; then bad "edited MANIFEST ref
 mkdir -p "$TMP/t"
 head -c 3000000 /dev/urandom > "$TMP/t/data.bin"
 "$ALEX" keygen "$TMP/seed" "$TMP/pub" >/dev/null
-"$ALEX" manifest "$TMP/t" v0 2026-01-01 >/dev/null
+"$ALEX" manifest "$TMP/t" v0 "$(date +%Y-%m-%d)" >/dev/null
 "$ALEX" sign "$TMP/t" "$TMP/seed" >/dev/null
 check "throwaway library verifies before tampering" "$ALEX" verify "$TMP/t" "$(cat "$TMP/pub")"
 printf '\xff' | dd of="$TMP/t/data.bin" bs=1 seek=1500000 conv=notrunc 2>/dev/null
@@ -62,12 +62,12 @@ head -c 100000 /dev/urandom > "$TMP/k/data.bin"
 "$ALEX" keygen "$TMP/root" "$TMP/root.pub" >/dev/null
 "$ALEX" keygen "$TMP/rel" "$TMP/rel.pub" >/dev/null
 "$ALEX" keygen "$TMP/other" "$TMP/other.pub" >/dev/null
-"$ALEX" manifest "$TMP/k" v0 2026-01-01 >/dev/null
+"$ALEX" manifest "$TMP/k" v0 "$(date +%Y-%m-%d)" >/dev/null
 "$ALEX" sign "$TMP/k" "$TMP/rel" >/dev/null
 if "$ALEX" verify "$TMP/k" "$(cat "$TMP/root.pub")" >/dev/null 2>&1; then bad "release key without KEYS refused"; else ok "release key without KEYS refused"; fi
 "$ALEX" keys "$TMP/k" "$TMP/root" "$(cat "$TMP/rel.pub")" >/dev/null
 check "release key listed in root-signed KEYS accepted" "$ALEX" verify "$TMP/k" "$(cat "$TMP/root.pub")"
-"$ALEX" manifest "$TMP/k" v0 2026-01-01 >/dev/null
+"$ALEX" manifest "$TMP/k" v0 "$(date +%Y-%m-%d)" >/dev/null
 "$ALEX" sign "$TMP/k" "$TMP/other" >/dev/null
 if "$ALEX" verify "$TMP/k" "$(cat "$TMP/root.pub")" >/dev/null 2>&1; then bad "unlisted key refused"; else ok "unlisted key refused"; fi
 

@@ -21,7 +21,13 @@ grep -vE '^\s*(#|$)' "$LIST" | while read -r name bytes want url; do
     continue
   fi
   echo "get  $name ($((bytes / 1048576)) MB)"
-  curl -fL --retry 5 --retry-delay 5 -C - -o "$name.part" "$url"
+  set -- $url
+  if [ $# -eq 1 ]; then
+    curl -fL --retry 5 --retry-delay 5 -C - -o "$name.part" "$1"
+  else
+    : > "$name.part"
+    for u in "$@"; do curl -fL --retry 5 --retry-delay 5 "$u" >> "$name.part"; done
+  fi
   got=$(size "$name.part")
   [ "$got" = "$bytes" ] || { echo "size mismatch for $name: $got != $bytes" >&2; exit 1; }
   [ "$(sha "$name.part")" = "$want" ] || { echo "SHA-256 mismatch for $name" >&2; exit 1; }
@@ -29,8 +35,8 @@ grep -vE '^\s*(#|$)' "$LIST" | while read -r name bytes want url; do
 done
 
 for f in *; do
-  case "$f" in MANIFEST|MANIFEST.sig|KEYS|KEYS.sig|*.hashes|*.search.db|*.part) continue ;; esac
-  grep -qE "^$f " "$LIST" || { echo "not in the list, refusing to sign around it: $f" >&2; exit 1; }
+  case "$f" in .*|MANIFEST|MANIFEST.sig|KEYS|KEYS.sig|*.hashes|*.search.db|*.part) continue ;; esac
+  awk -v n="$f" '$1==n {found=1} END {exit !found}' "$LIST" || { echo "not in the list, refusing to sign around it: $f" >&2; exit 1; }
 done
 
 rm -f ./*.search.db ./*.search.db.hashes

@@ -4,36 +4,18 @@ use std::sync::{Arc, Mutex};
 
 mod ask;
 pub mod ocr;
+pub mod streets;
 mod vfs;
 
 pub use ask::{ask_candidates, best_passage, pick_sources, Pick};
-
-const CACHE_CHUNKS: usize = 32;
 
 struct Reader {
     vf: VerifiedFile,
     chunk: u64,
     size: u64,
-    cache: Vec<(u64, Vec<u8>)>,
 }
 
 impl Reader {
-    fn chunk_bytes(&mut self, ci: u64) -> Option<&[u8]> {
-        if let Some(pos) = self.cache.iter().position(|(i, _)| *i == ci) {
-            let hit = self.cache.remove(pos);
-            self.cache.push(hit);
-        } else {
-            let off = ci * self.chunk;
-            let len = std::cmp::min(self.chunk, self.size - off) as usize;
-            let buf = self.vf.read_at(off, len).ok()?;
-            if self.cache.len() >= CACHE_CHUNKS {
-                self.cache.remove(0);
-            }
-            self.cache.push((ci, buf));
-        }
-        self.cache.last().map(|(_, b)| b.as_slice())
-    }
-
     fn read(&mut self, offset: u64, out: &mut [u8]) -> Option<usize> {
         let mut done = 0usize;
         while done < out.len() {
@@ -43,7 +25,9 @@ impl Reader {
             }
             let ci = pos / self.chunk;
             let from = (pos - ci * self.chunk) as usize;
-            let buf = self.chunk_bytes(ci)?;
+            let off = ci * self.chunk;
+            let len = std::cmp::min(self.chunk, self.size - off) as usize;
+            let buf = self.vf.read_at(off, len).ok()?;
             let take = std::cmp::min(buf.len() - from, out.len() - done);
             out[done..done + take].copy_from_slice(&buf[from..from + take]);
             done += take;
@@ -86,7 +70,6 @@ pub fn open_verified(vf: VerifiedFile, chunk: u64) -> Result<VerifiedDb, String>
         vf,
         chunk,
         size,
-        cache: Vec::new(),
     }));
     let token = {
         let mut n = NEXT.lock().map_err(|_| "search lock")?;
@@ -113,6 +96,24 @@ pub fn open_verified(vf: VerifiedFile, chunk: u64) -> Result<VerifiedDb, String>
     Ok(db)
 }
 
+fn file_uri(path: &std::path::Path) -> String {
+    let lossy = path.to_string_lossy();
+    let stripped = alexandria_core::strip_verbatim(&lossy);
+    let mut p = String::with_capacity(stripped.len() + 8);
+    for b in stripped.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => p.push(b as char),
+            b'\\' => p.push('/'),
+            _ => p.push_str(&format!("%{b:02X}")),
+        }
+    }
+    if p.starts_with('/') {
+        format!("file://{p}")
+    } else {
+        format!("file:///{p}")
+    }
+}
+
 pub fn open_local(path: &std::path::Path) -> Result<VerifiedDb, String> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if meta.file_type().is_symlink() || !meta.is_file() {
@@ -121,11 +122,14 @@ pub fn open_local(path: &std::path::Path) -> Result<VerifiedDb, String> {
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
         | rusqlite::OpenFlags::SQLITE_OPEN_URI
         | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let p = path.to_string_lossy().replace('?', "%3f").replace('#', "%23");
-    let conn = rusqlite::Connection::open_with_flags(format!("file:{p}?immutable=1"), flags)
+    let conn = rusqlite::Connection::open_with_flags(format!("{}?immutable=1", file_uri(path)), flags)
         .map_err(|e| e.to_string())?;
-    conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA query_only=1;")
+    conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
         .map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        "PRAGMA temp_store=MEMORY; PRAGMA query_only=1; PRAGMA trusted_schema=OFF; PRAGMA cell_size_check=ON;",
+    )
+    .map_err(|e| e.to_string())?;
     conn.query_row("SELECT max(rowid) FROM articles", [], |r| r.get::<_, Option<i64>>(0))
         .map_err(|e| e.to_string())?;
     Ok(VerifiedDb { conn: Some(conn), token: String::new() })
@@ -165,7 +169,10 @@ pub fn snippet(text: &str, q: &str) -> Option<String> {
     Some(format!("{before}{out}{after}"))
 }
 
+static PDF_HOOK_LOCK: Mutex<()> = Mutex::new(());
+
 pub fn pdf_text(bytes: &[u8]) -> Option<(Option<String>, String)> {
+    let _guard = PDF_HOOK_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let out = pdf_extract_quiet(bytes);
@@ -186,6 +193,11 @@ fn pdf_extract_quiet(bytes: &[u8]) -> Option<(Option<String>, String)> {
         Some((meta, text))
     });
     out.ok().flatten()
+}
+
+pub fn pdf_text_only(bytes: &[u8]) -> Option<String> {
+    let bytes = bytes.to_vec();
+    std::panic::catch_unwind(move || pdf_extract::extract_text_from_mem(&bytes).ok()).ok().flatten()
 }
 
 pub fn pdf_titles(items: Vec<(String, Vec<u8>)>) -> Vec<String> {
@@ -332,7 +344,126 @@ fn exact_title(q: &str) -> String {
     }
 }
 
+pub(crate) fn has_docs(conn: &rusqlite::Connection) -> bool {
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'docs'",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+pub(crate) fn meta_str(conn: &rusqlite::Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+        .ok()
+}
+
+pub(crate) fn meta_int(conn: &rusqlite::Connection, key: &str) -> Option<i64> {
+    meta_str(conn, key).and_then(|v| v.parse().ok())
+}
+
+pub(crate) fn title_ordered(conn: &rusqlite::Connection) -> bool {
+    meta_str(conn, "order").as_deref() == Some("title")
+}
+
+fn title_query(q: &str) -> String {
+    let tokens: Vec<String> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_lowercase())
+        .collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+    tokens
+        .iter()
+        .map(|t| format!("title : \"{t}\"*"))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+const COUNT_CAP: usize = 10_000;
+
+pub fn browse(
+    conn: &rusqlite::Connection,
+    needle: &str,
+    reverse: bool,
+    offset: usize,
+    limit: usize,
+) -> Result<(usize, bool, Vec<Hit>), String> {
+    let fts = title_query(needle);
+    if fts.is_empty() {
+        return Ok((0, false, Vec::new()));
+    }
+    let contentless = has_docs(conn);
+    let title_col = if contentless { "docs.title" } else { "articles.title" };
+    let url_col = if contentless { "docs.url" } else { "articles.url" };
+    let from = if contentless {
+        " FROM articles JOIN docs ON docs.id = articles.rowid "
+    } else {
+        " FROM articles "
+    };
+    let n = conn
+        .query_row(
+            &format!(
+                "SELECT count(*) FROM (SELECT rowid FROM articles WHERE articles MATCH ?1 LIMIT {})",
+                COUNT_CAP + 1
+            ),
+            rusqlite::params![fts],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n as usize)
+        .map_err(|e| e.to_string())?;
+    let more = n > COUNT_CAP;
+    let total = n.min(COUNT_CAP);
+    let order = if reverse { "DESC" } else { "ASC" };
+    let sql = if contentless && title_ordered(conn) {
+        format!(
+            "SELECT {title_col}, {url_col} {from} WHERE articles MATCH ?1
+             ORDER BY articles.rowid {order} LIMIT ?2 OFFSET ?3"
+        )
+    } else {
+        format!(
+            "SELECT {title_col}, {url_col} {from} WHERE articles MATCH ?1
+             ORDER BY {title_col} COLLATE NOCASE {order} LIMIT ?2 OFFSET ?3"
+        )
+    };
+    let mut stmt = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![fts, limit as i64, offset as i64],
+            |row| {
+                Ok(Hit {
+                    title: row.get(0)?,
+                    url: row.get(1)?,
+                    all: true,
+                })
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    let items = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+    Ok((total, more, items))
+}
+
+pub fn title_urls(q: &str) -> Vec<String> {
+    let t = exact_title(q);
+    let mut out: Vec<String> = Vec::new();
+    for s in [t.clone(), singular(&t)] {
+        let mut c = s.chars();
+        let Some(f) = c.next() else { continue };
+        let u = f.to_uppercase().chain(c).collect::<String>().replace(' ', "_");
+        if !out.contains(&u) {
+            out.push(u);
+        }
+    }
+    out
+}
+
 pub fn query(conn: &rusqlite::Connection, q: &str) -> Result<Vec<Hit>, String> {
+    if raw_words(q).is_empty() {
+        return Ok(Vec::new());
+    }
     let mut hits = run_query(conn, &fts_query(q), q, true)?;
     let t = terms(q);
     if hits.len() < 3 && t.len() > 1 {
@@ -357,21 +488,44 @@ fn singular(s: &str) -> String {
     }
 }
 
+const EXACT_CAP_SMALL: i64 = 50_000;
+const EXACT_CAP_BIG: i64 = 5_000;
+const BIG_INDEX: i64 = 1_000_000;
+const TITLE_CANDIDATES: usize = 200;
+const BODY_CANDIDATES: usize = 2000;
+const BIG_MATCHES: i64 = 100_000;
+
 fn run_query(conn: &rusqlite::Connection, fts: &str, q: &str, all: bool) -> Result<Vec<Hit>, String> {
+    let contentless = has_docs(conn);
     let t: Vec<String> = terms(q).into_iter().take(8).collect();
-    let title_hits = if t.is_empty() {
-        "0".to_string()
-    } else {
-        (0..t.len())
-            .map(|i| format!("(instr(lower(title), ?{}) > 0)", i + 3))
-            .collect::<Vec<_>>()
-            .join(" + ")
-    };
+    if t.is_empty() {
+        return Ok(Vec::new());
+    }
+    if contentless {
+        return run_query_contentless(conn, fts, q, all, &t);
+    }
+    exact_query(conn, fts, q, all, &t, "articles.title", "articles.url", " FROM articles ")
+}
+
+fn exact_query(
+    conn: &rusqlite::Connection,
+    fts: &str,
+    q: &str,
+    all: bool,
+    t: &[String],
+    title_col: &str,
+    url_col: &str,
+    from: &str,
+) -> Result<Vec<Hit>, String> {
+    let title_hits = (0..t.len())
+        .map(|i| format!("(instr(lower({title_col}), ?{}) > 0)", i + 3))
+        .collect::<Vec<_>>()
+        .join(" + ");
     let singular_at = t.len() + 3;
     let sql = format!(
-        "SELECT title, url FROM articles
+        "SELECT {title_col}, {url_col}{from}
          WHERE articles MATCH ?1
-         ORDER BY (title = ?2 COLLATE NOCASE OR title = ?{singular_at} COLLATE NOCASE) DESC,
+         ORDER BY ({title_col} = ?2 COLLATE NOCASE OR {title_col} = ?{singular_at} COLLATE NOCASE) DESC,
                   ({title_hits}) DESC, bm25(articles, 10.0, 1.0)
          LIMIT 40"
     );
@@ -379,7 +533,7 @@ fn run_query(conn: &rusqlite::Connection, fts: &str, q: &str, all: bool) -> Resu
     let exact = exact_title(q);
     let singular = singular(&exact);
     let mut params: Vec<String> = vec![fts.to_string(), exact];
-    params.extend(t);
+    params.extend(t.iter().cloned());
     params.push(singular);
     let rows = stmt
         .query_map(rusqlite::params_from_iter(params.iter()), |row| {
@@ -391,4 +545,139 @@ fn run_query(conn: &rusqlite::Connection, fts: &str, q: &str, all: bool) -> Resu
         })
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+fn run_query_contentless(
+    conn: &rusqlite::Connection,
+    fts: &str,
+    q: &str,
+    all: bool,
+    t: &[String],
+) -> Result<Vec<Hit>, String> {
+    let m = conn
+        .query_row(
+            &format!("SELECT count(*) FROM (SELECT rowid FROM articles WHERE articles MATCH ?1 LIMIT {})", BIG_MATCHES + 1),
+            [fts],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let max_id = conn
+        .query_row("SELECT max(id) FROM docs", [], |r| r.get::<_, Option<i64>>(0))
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    let exact_cap = if max_id > BIG_INDEX { EXACT_CAP_BIG } else { EXACT_CAP_SMALL };
+    if m <= exact_cap {
+        return exact_query(
+            conn,
+            fts,
+            q,
+            all,
+            t,
+            "docs.title",
+            "docs.url",
+            " FROM articles JOIN docs ON docs.id = articles.rowid ",
+        );
+    }
+    let big = m > BIG_MATCHES;
+    let mut scores: HashMap<i64, f64> = HashMap::new();
+    let title_fts = format!("title : ({fts})");
+    let mut st = conn
+        .prepare_cached(&format!(
+            "SELECT rowid, bm25(articles, 10.0, 1.0) FROM articles WHERE articles MATCH ?1 ORDER BY bm25(articles, 10.0, 1.0) LIMIT {TITLE_CANDIDATES}"
+        ))
+        .map_err(|e| e.to_string())?;
+    let title_rows = st
+        .query_map([&title_fts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    for r in title_rows {
+        let (id, s) = r.map_err(|e| e.to_string())?;
+        scores.entry(id).or_insert(s);
+    }
+    if !big {
+        let mut st = conn
+            .prepare_cached(&format!(
+                "SELECT rowid, bm25(articles, 10.0, 1.0) FROM articles WHERE articles MATCH ?1 ORDER BY bm25(articles, 10.0, 1.0) LIMIT {BODY_CANDIDATES}"
+            ))
+            .map_err(|e| e.to_string())?;
+        let body_rows = st
+            .query_map([fts], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for r in body_rows {
+            let (id, s) = r.map_err(|e| e.to_string())?;
+            scores.insert(id, s);
+        }
+    }
+    if scores.is_empty() {
+        return Ok(Vec::new());
+    }
+    let exact = exact_title(q);
+    let singular = singular(&exact);
+    let mut docs = conn
+        .prepare_cached("SELECT title, url FROM docs WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut hits = Vec::with_capacity(scores.len());
+    for (&id, &score) in &scores {
+        let Ok((title, url)) = docs.query_row([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) else {
+            continue;
+        };
+        let lower = title.to_lowercase();
+        let title_hits = t.iter().filter(|w| lower.contains(w.as_str())).count();
+        let exact_hit = lower == exact || lower == singular;
+        hits.push((exact_hit, title_hits, score, title, url));
+    }
+    hits.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.3.cmp(&b.3))
+    });
+    Ok(hits
+        .into_iter()
+        .take(40)
+        .map(|(_, _, _, title, url)| Hit { title, url, all })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_uri, pdf_text};
+    use std::path::Path;
+
+    #[test]
+    fn file_uri_percent_encodes_the_path() {
+        assert_eq!(file_uri(Path::new("/a%z.db")), "file:///a%25z.db");
+        assert_eq!(file_uri(Path::new("/a b.db")), "file:///a%20b.db");
+        assert_eq!(file_uri(Path::new("/a#b.db")), "file:///a%23b.db");
+        assert_eq!(file_uri(Path::new("/a?b.db")), "file:///a%3Fb.db");
+    }
+
+    #[test]
+    fn file_uri_handles_windows_drive_paths() {
+        assert_eq!(file_uri(Path::new(r"C:\Data\index.db")), "file:///C:/Data/index.db");
+    }
+
+    #[test]
+    fn file_uri_strips_the_windows_verbatim_prefix() {
+        assert_eq!(file_uri(Path::new(r"\\?\C:\x")), "file:///C:/x");
+        assert_eq!(file_uri(Path::new(r"\\?\UNC\server\share\index.db")), "file:////server/share/index.db");
+    }
+
+    #[test]
+    fn pdf_text_suppresses_and_restores_the_panic_hook() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| FLAG.store(true, Ordering::SeqCst)));
+        let _ = pdf_text(b"not a pdf");
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| assert_eq!(pdf_text(b"also not a pdf"), None));
+            }
+        });
+        let caught = std::panic::catch_unwind(|| panic!("probe"));
+        assert!(caught.is_err());
+        assert!(FLAG.load(Ordering::SeqCst), "the original panic hook was not restored");
+        std::panic::set_hook(previous);
+    }
 }

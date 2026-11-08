@@ -290,3 +290,16 @@ fn open_is_read_only() {
     let mut w = OpenOptions::new().write(true).open(&f).unwrap();
     w.write_all(&[0]).unwrap();
 }
+
+#[test]
+fn hashing_a_stream_matches_hashing_the_file() {
+    let dir = tmpdir("stream");
+    for len in [0usize, 1, 4096, 4097, 3 * 4096 + 5] {
+        let p = dir.join(format!("f{len}"));
+        let bytes: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+        write_file(&p, &bytes);
+        let (hashes, size) = alexandria_core::hash_reader(&mut &bytes[..], 4096).unwrap();
+        assert_eq!(size, len as u64);
+        assert_eq!(hashes, alexandria_core::hash_file(&p, 4096).unwrap(), "len {len}");
+    }
+}

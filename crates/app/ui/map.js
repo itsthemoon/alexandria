@@ -53,6 +53,7 @@ async function bootMap(pack, target) {
   const status = document.getElementById('mapstatus');
   try {
     if (mapView) { mapView.remove(); mapView = null; }
+    resetDirections();
     const chosen = pack || document.getElementById('mapselect').value || null;
     mapInfo = await window.__TAURI__.core.invoke('map_info', { pack: chosen });
     roadIndex = [];
@@ -75,7 +76,7 @@ async function bootMap(pack, target) {
     });
     mapView.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     mapView.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'imperial' }), 'bottom-left');
-    mapView.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap contributors · Protomaps' }), 'bottom-right');
+    mapView.addControl(new maplibregl.AttributionControl({ compact: true, customAttribution: '© OpenStreetMap contributors · Protomaps · Overture Maps' }), 'bottom-right');
     mapView.on('error', (e) => {
       const err = e && e.error;
       const msg = (err && err.message) || (typeof err === 'string' ? err : 'a map tile could not be read');
@@ -113,21 +114,36 @@ function placeMatch(p, q) {
   return names.some(n => n.toLowerCase().includes(q)) ? names[0] : null;
 }
 
-function runMapSearch() {
-  const q = document.getElementById('mapsearch').value.trim().toLowerCase();
+function streetRows(rows) {
+  return (rows || []).map(r => ({ name: r.name, c: [r.lon, r.lat], kind: 'street', place: r.place || null }));
+}
+
+function mergeStreets(seen, rows) {
+  streetRows(rows).forEach((r, i) => {
+    const key = r.name.toLowerCase();
+    if (!seen.has(key)) seen.set(key, { ...r, pop: 1000 - i });
+  });
+  return seen;
+}
+
+function streetNear(zoom, c) {
+  return zoom >= 8 ? { lat: c.lat, lon: c.lng } : {};
+}
+
+async function collectStreetResults(q) {
   const sq = streetQuery(q);
-  const box = document.getElementById('mapresults');
-  box.textContent = '';
-  box.classList.remove('on');
-  if (!q || !mapView || !mapView.isStyleLoaded()) return;
   let feats = [];
   try {
     feats = mapView.queryRenderedFeatures({ layers: ['place-label', 'road-label'] });
     feats = feats.concat(mapView.querySourceFeatures('pm', { sourceLayer: 'roads' }));
     feats = feats.concat(mapView.querySourceFeatures('pm', { sourceLayer: 'places' }));
     feats = feats.concat(mapView.querySourceFeatures('pm', { sourceLayer: 'pois' }));
-  } catch (_) { try { feats = mapView.queryRenderedFeatures(); } catch (__) { return; } }
+  } catch (_) { try { feats = mapView.queryRenderedFeatures(); } catch (__) { return []; } }
   const seen = new Map();
+  try {
+    const far = await window.__TAURI__.core.invoke('streets_search', { q: sq, limit: 8, ...streetNear(mapView.getZoom(), mapView.getCenter()) });
+    mergeStreets(seen, far);
+  } catch (_) {}
   for (const f of feats) {
     const name = placeMatch(f.properties, q);
     if (!name) continue;
@@ -148,9 +164,12 @@ function runMapSearch() {
     if (seen.has(key)) continue;
     seen.set(key, { name: g[0], c: [g[1], g[2]], kind: 'street', pop: 0 });
   }
-  const rows = [...seen.values()]
-    .sort((a, b) => (b.pop || 0) - (a.pop || 0))
-    .slice(0, 12);
+  return [...seen.values()].sort((a, b) => (b.pop || 0) - (a.pop || 0)).slice(0, 12);
+}
+
+function renderStreetResults(box, rows, onPick) {
+  box.textContent = '';
+  box.classList.remove('on');
   if (!rows.length) {
     const d = document.createElement('div');
     d.className = 'empty';
@@ -159,21 +178,278 @@ function runMapSearch() {
   } else {
     for (const r of rows) {
       const d = document.createElement('div');
-      d.textContent = `${r.name} · ${r.kind}`;
-      d.onclick = async () => {
-        box.classList.remove('on');
-        const zoom = r.kind === 'street' ? 16 : 13;
-        const best = await window.__TAURI__.core.invoke('map_for_point', { lon: r.c[0], lat: r.c[1] }).catch(() => null);
-        const sel = document.getElementById('mapselect');
-        if (best && best !== sel.value) {
-          sel.value = best;
-          await bootMap(best, { center: r.c, zoom });
-        } else {
-          mapView.flyTo({ center: r.c, zoom: Math.min(zoom, mapInfo.max_zoom + 1) });
-        }
-      };
+      d.textContent = r.place ? `${r.name} · ${r.place}` : `${r.name} · ${r.kind}`;
+      d.onclick = () => onPick(r);
       box.appendChild(d);
     }
   }
   box.classList.add('on');
 }
+
+async function runMapSearch() {
+  const q = document.getElementById('mapsearch').value.trim().toLowerCase();
+  const box = document.getElementById('mapresults');
+  if (!q || !mapView || !mapView.isStyleLoaded()) {
+    box.textContent = '';
+    box.classList.remove('on');
+    return;
+  }
+  const rows = await collectStreetResults(q);
+  renderStreetResults(box, rows, async (r) => {
+    box.classList.remove('on');
+    const zoom = r.kind === 'street' ? 16 : 13;
+    const best = await window.__TAURI__.core.invoke('map_for_point', { lon: r.c[0], lat: r.c[1] }).catch(() => null);
+    const sel = document.getElementById('mapselect');
+    if (best && best !== sel.value) {
+      sel.value = best;
+      await bootMap(best, { center: r.c, zoom });
+    } else {
+      mapView.flyTo({ center: r.c, zoom: Math.min(zoom, mapInfo.max_zoom + 1) });
+    }
+  });
+}
+
+let dirFrom = null;
+let dirTo = null;
+
+function setRoads(has) {
+  const d = document.getElementById('directions');
+  if (d) d.classList.toggle('off', !has);
+}
+
+function resetDirections() {
+  dirFrom = null;
+  dirTo = null;
+  const f = document.getElementById('dirfrom');
+  const t = document.getElementById('dirto');
+  if (f) f.value = '';
+  if (t) t.value = '';
+  const out = document.getElementById('dirout');
+  if (out) out.textContent = '';
+}
+
+function formatDistanceM(m) {
+  const mi = m / 1609.344;
+  if (mi < 0.1) return `${Math.round(m)} m`;
+  if (mi < 10) return `${mi.toFixed(1)} mi`;
+  return `${Math.round(mi)} mi`;
+}
+
+function formatKm(m) {
+  if (m < 1000) return `${Math.round(m)} m`;
+  if (m < 10000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m / 1000)} km`;
+}
+
+function formatDurationS(s) {
+  const mins = Math.round(s / 60);
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${h} hr ${m} min`;
+}
+
+function routeSummary(route) {
+  return `${formatKm(route.distance_m)} · ${formatDistanceM(route.distance_m)} · ${formatDurationS(route.duration_s)}`;
+}
+
+function routeGeoJSON(line) {
+  return { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: line } }] };
+}
+
+function routeBounds(line) {
+  const first = line[0];
+  let minLon = first[0], minLat = first[1], maxLon = first[0], maxLat = first[1];
+  for (const c of line) {
+    minLon = Math.min(minLon, c[0]);
+    minLat = Math.min(minLat, c[1]);
+    maxLon = Math.max(maxLon, c[0]);
+    maxLat = Math.max(maxLat, c[1]);
+  }
+  return [[minLon, minLat], [maxLon, maxLat]];
+}
+
+function routePadding(container, panel) {
+  const pad = { top: 40, right: 60, bottom: 60, left: 80 };
+  if (!container || !panel) return pad;
+  const p = panel.getBoundingClientRect();
+  if (!p.width) return pad;
+  pad.left = Math.ceil(p.right - container.getBoundingClientRect().left) + 24;
+  return pad;
+}
+
+function routeMarkerData(line) {
+  return { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { kind: 'start' }, geometry: { type: 'Point', coordinates: line[0] } },
+    { type: 'Feature', properties: { kind: 'end' }, geometry: { type: 'Point', coordinates: line[line.length - 1] } },
+  ] };
+}
+
+function stepItems(route) {
+  return (route.steps || []).map((s, i) => ({ n: i + 1, text: s.text, dist: formatDistanceM(s.distance_m), at: s.at }));
+}
+
+function clearRouteLine() {
+  if (mapView && mapView.getLayer('route')) {
+    mapView.removeLayer('route');
+    mapView.removeLayer('route-casing');
+    mapView.removeSource('route');
+  }
+}
+
+function clearRouteMarkers() {
+  if (mapView && mapView.getLayer('route-end')) {
+    mapView.removeLayer('route-end');
+    mapView.removeLayer('route-start');
+    mapView.removeSource('route-pts');
+  }
+}
+
+function clearDirections() {
+  clearRouteLine();
+  clearRouteMarkers();
+  const out = document.getElementById('dirout');
+  if (out) out.textContent = '';
+}
+
+function drawRouteMarkers(line) {
+  if (!line.length) return;
+  const src = mapView.getSource('route-pts');
+  if (src) {
+    src.setData(routeMarkerData(line));
+    return;
+  }
+  mapView.addSource('route-pts', { type: 'geojson', data: routeMarkerData(line) });
+  mapView.addLayer({ id: 'route-start', type: 'circle', source: 'route-pts', filter: ['==', ['get', 'kind'], 'start'], paint: { 'circle-radius': 6, 'circle-color': '#f1f2f4', 'circle-stroke-width': 2, 'circle-stroke-color': '#0b0b0c' } });
+  mapView.addLayer({ id: 'route-end', type: 'circle', source: 'route-pts', filter: ['==', ['get', 'kind'], 'end'], paint: { 'circle-radius': 6.5, 'circle-color': '#0b0b0c', 'circle-stroke-width': 2.5, 'circle-stroke-color': '#f1f2f4' } });
+}
+
+function drawRoute(route) {
+  const line = route.line || [];
+  const geo = routeGeoJSON(line);
+  const src = mapView.getSource('route');
+  if (src) {
+    src.setData(geo);
+  } else {
+    mapView.addSource('route', { type: 'geojson', data: geo });
+    mapView.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0b0b0c', 'line-width': 8 } });
+    mapView.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#f1f2f4', 'line-width': 4.5 } });
+  }
+  drawRouteMarkers(line);
+  if (line.length > 1) {
+    const container = mapView.getContainer();
+    mapView.fitBounds(routeBounds(line), { padding: routePadding(container, container.querySelector('#directions')), duration: 400 });
+  }
+}
+
+function renderSteps(route) {
+  const out = document.getElementById('dirout');
+  out.textContent = '';
+  const sum = document.createElement('div');
+  sum.className = 'dirsum';
+  sum.textContent = routeSummary(route);
+  out.appendChild(sum);
+  const items = stepItems(route);
+  if (!items.length) {
+    const e = document.createElement('div');
+    e.className = 'dirempty';
+    e.textContent = 'No turn-by-turn steps for this route.';
+    out.appendChild(e);
+    return;
+  }
+  const ol = document.createElement('ol');
+  ol.className = 'dirsteps';
+  for (const it of items) {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.className = 'dirstep';
+    const n = document.createElement('span');
+    n.className = 'dirnum';
+    n.textContent = String(it.n);
+    const tx = document.createElement('span');
+    tx.className = 'dirtext';
+    tx.textContent = it.text;
+    const d = document.createElement('span');
+    d.className = 'dirdist';
+    d.textContent = it.dist;
+    b.append(n, tx, d);
+    b.onclick = () => mapView.flyTo({ center: it.at, zoom: Math.max(mapView.getZoom(), 15) });
+    li.appendChild(b);
+    ol.appendChild(li);
+  }
+  out.appendChild(ol);
+}
+
+async function runDirections() {
+  const out = document.getElementById('dirout');
+  if (!dirFrom || !dirTo) {
+    out.textContent = '';
+    const e = document.createElement('div');
+    e.className = 'dirempty';
+    e.textContent = 'Choose a From and a To first.';
+    out.appendChild(e);
+    return;
+  }
+  out.textContent = '';
+  const wait = document.createElement('div');
+  wait.className = 'dirempty';
+  wait.textContent = 'Finding a route…';
+  out.appendChild(wait);
+  try {
+    const route = await window.__TAURI__.core.invoke('route', { from: [dirFrom[1], dirFrom[0]], to: [dirTo[1], dirTo[0]] });
+    drawRoute(route);
+    renderSteps(route);
+  } catch (e) {
+    clearRouteLine();
+    clearRouteMarkers();
+    out.textContent = '';
+    const err = document.createElement('div');
+    err.className = 'dirempty';
+    err.textContent = String(e);
+    out.appendChild(err);
+  }
+}
+
+async function dirLookup(input, box, onPick) {
+  const q = input.value.trim().toLowerCase();
+  box.textContent = '';
+  box.classList.remove('on');
+  if (!q || !mapView || !mapView.isStyleLoaded()) return;
+  const rows = await collectStreetResults(q);
+  renderStreetResults(box, rows, (r) => {
+    box.classList.remove('on');
+    onPick(r);
+  });
+}
+
+function wireDirSearch(inputId, resultsId, clearPoint, onPick, onEnter) {
+  const input = document.getElementById(inputId);
+  const box = document.getElementById(resultsId);
+  let t = null;
+  input.addEventListener('input', () => {
+    clearPoint();
+    clearTimeout(t);
+    t = setTimeout(() => dirLookup(input, box, onPick), 140);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (onEnter) onEnter(); else dirLookup(input, box, onPick);
+    }
+  });
+}
+
+function wireDirections() {
+  wireDirSearch('dirfrom', 'dirfromresults', () => { dirFrom = null; }, (r) => {
+    dirFrom = r.c;
+    document.getElementById('dirfrom').value = r.name;
+  }, null);
+  wireDirSearch('dirto', 'dirtoresults', () => { dirTo = null; }, (r) => {
+    dirTo = r.c;
+    document.getElementById('dirto').value = r.name;
+  }, () => runDirections());
+  document.getElementById('dirgo').onclick = runDirections;
+  document.getElementById('dirclear').onclick = clearDirections;
+}
+
+wireDirections();

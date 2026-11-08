@@ -54,7 +54,7 @@
           <button id="toask" class="pill">Ask about this</button>
         </div>
       </div>
-      <iframe id="body" title="Article" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe>
+      <iframe id="body" title="Article" sandbox="allow-top-navigation-by-user-activation" referrerpolicy="no-referrer"></iframe>
     </div>
   </section>
 
@@ -85,6 +85,23 @@
         <input id="mapsearch" placeholder="Find a place or street" autocomplete="off" aria-label="Find a place or street">
         <div id="mapresults"></div>
         <select id="mapselect" title="Map" aria-label="Map"></select>
+      </div>
+      <div id="directions" class="off">
+        <div class="dirtitle">Directions</div>
+        <div class="dirfield">
+          <input id="dirfrom" placeholder="From — street or place" autocomplete="off" aria-label="From">
+          <div class="dirresults" id="dirfromresults"></div>
+        </div>
+        <div class="dirfield">
+          <input id="dirto" placeholder="To — street or place" autocomplete="off" aria-label="To">
+          <div class="dirresults" id="dirtoresults"></div>
+        </div>
+        <div class="dirbar">
+          <button id="dirgo" class="primary dirbtn">Go</button>
+          <button id="dirclear" class="pill dirbtn">Clear</button>
+        </div>
+        <div id="dirout" aria-live="polite"></div>
+        <div class="muted small">Directions © OpenStreetMap contributors · ODbL</div>
       </div>
     </div>
     <div id="mapmeta"></div>

@@ -4,6 +4,9 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 pub const DOMAIN: &[u8] = b"alexandria-manifest-v1\0";
 pub const CHUNK: u64 = 1 << 20;
@@ -112,10 +115,17 @@ pub fn unhex(s: &str) -> Result<Vec<u8>> {
 }
 
 pub fn chunk_count(size: u64, chunk: u64) -> u64 {
-    if size == 0 {
-        0
+    size.div_ceil(chunk)
+}
+
+pub fn strip_verbatim(path: &str) -> std::borrow::Cow<'_, str> {
+    let Some(rest) = path.strip_prefix(r"\\?\") else {
+        return std::borrow::Cow::Borrowed(path);
+    };
+    if let Some(unc) = rest.strip_prefix("UNC\\") {
+        std::borrow::Cow::Owned(format!("\\\\{unc}"))
     } else {
-        (size + chunk - 1) / chunk
+        std::borrow::Cow::Borrowed(rest)
     }
 }
 
@@ -144,6 +154,30 @@ pub fn hash_file(path: &Path, chunk: u64) -> Result<Vec<u8>> {
         out.extend_from_slice(&Sha256::digest(&buf[..filled]));
     }
     Ok(out)
+}
+
+pub fn hash_reader(r: &mut dyn Read, chunk: u64) -> Result<(Vec<u8>, u64)> {
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; chunk as usize];
+    let mut size = 0u64;
+    loop {
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            let n = r.read(&mut buf[filled..])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            return Ok((out, size));
+        }
+        size += filled as u64;
+        out.extend_from_slice(&Sha256::digest(&buf[..filled]));
+        if filled < buf.len() {
+            return Ok((out, size));
+        }
+    }
 }
 
 pub fn write_hashes(path: &Path, chunk: u64) -> Result<PathBuf> {
@@ -431,7 +465,11 @@ pub struct VerifiedFile {
     hashes: Vec<[u8; 32]>,
     chunk: u64,
     size: u64,
+    recent: Vec<(u64, std::sync::Arc<Vec<u8>>)>,
+    recent_bytes: usize,
 }
+
+const RECENT_BYTES: usize = 64 << 20;
 
 fn open_regular_nofollow(path: &Path) -> Result<(File, std::fs::Metadata)> {
     let mut opts = OpenOptions::new();
@@ -457,7 +495,14 @@ fn open_regular_nofollow(path: &Path) -> Result<(File, std::fs::Metadata)> {
 impl VerifiedFile {
     pub fn open_in(root: &Path, entry: &Entry, chunk: u64) -> Result<VerifiedFile> {
         let root = fs::canonicalize(root)?;
-        let joined = root.join(&entry.path);
+        let mut joined = root.clone();
+        for seg in entry.path.split('/') {
+            joined.push(seg);
+            let meta = fs::symlink_metadata(&joined).map_err(|_| Error::BadPath(entry.path.clone()))?;
+            if meta.file_type().is_symlink() {
+                return Err(Error::BadPath(entry.path.clone()));
+            }
+        }
         let real = fs::canonicalize(&joined)?;
         if !real.starts_with(&root) {
             return Err(Error::BadPath(entry.path.clone()));
@@ -517,11 +562,17 @@ impl VerifiedFile {
             hashes,
             chunk,
             size: entry.size,
+            recent: Vec::new(),
+            recent_bytes: 0,
         })
     }
 
     pub fn size(&self) -> u64 {
         self.size
+    }
+
+    pub fn chunk(&self) -> u64 {
+        self.chunk
     }
 
     fn read_chunk(&mut self, index: u64) -> Result<Vec<u8>> {
@@ -536,6 +587,22 @@ impl VerifiedFile {
         Ok(buf)
     }
 
+    fn recent_chunk(&mut self, index: u64) -> Result<std::sync::Arc<Vec<u8>>> {
+        if let Some(i) = self.recent.iter().position(|(c, _)| *c == index) {
+            let hit = self.recent.remove(i);
+            self.recent.push(hit.clone());
+            return Ok(hit.1);
+        }
+        let buf = std::sync::Arc::new(self.read_chunk(index)?);
+        self.recent_bytes += buf.len();
+        while self.recent_bytes > RECENT_BYTES {
+            let (_, old) = self.recent.remove(0);
+            self.recent_bytes -= old.len();
+        }
+        self.recent.push((index, buf.clone()));
+        Ok(buf)
+    }
+
     pub fn read_at(&mut self, offset: u64, len: usize) -> Result<Vec<u8>> {
         let end = offset.checked_add(len as u64).ok_or(Error::OutOfBounds)?;
         if end > self.size {
@@ -545,7 +612,7 @@ impl VerifiedFile {
         let mut pos = offset;
         while pos < end {
             let ci = pos / self.chunk;
-            let buf = self.read_chunk(ci)?;
+            let buf = self.recent_chunk(ci)?;
             let from = (pos - ci * self.chunk) as usize;
             let take = std::cmp::min(buf.len() - from, (end - pos) as usize);
             out.extend_from_slice(&buf[from..from + take]);
@@ -627,18 +694,46 @@ pub fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("alexandria-cache")
 }
 
-pub fn cached_copy(root: &Path, entry: &Entry, chunk: u64, dir: &Path) -> Result<PathBuf> {
-    fs::create_dir_all(dir)?;
-    let name = format!("{}-{}.bin", entry.path.rsplit('/').next().unwrap_or("entry"), hex(&entry.hashes_sha256)[..16].to_string());
-    let dest = dir.join(&name);
-    let part = dir.join(format!("{name}.part"));
+static COPY_LOCK: Mutex<()> = Mutex::new(());
+static PART_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    let _ = fs::remove_file(&part);
+const PART_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+
+fn stale_part(mtime: SystemTime, now: SystemTime) -> bool {
+    now.duration_since(mtime)
+        .map(|d| d > PART_MAX_AGE)
+        .unwrap_or(false)
+}
+
+fn part_name(name: &str) -> String {
+    let n = PART_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{name}.{}.{}.part", std::process::id(), n)
+}
+
+pub fn cached_copy(root: &Path, entry: &Entry, chunk: u64, dir: &Path) -> Result<PathBuf> {
+    let _guard = COPY_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    fs::create_dir_all(dir)?;
+    let stem = entry.path.rsplit('/').next().unwrap_or("entry");
+    let name = format!("{stem}-{}.bin", hex(&entry.hashes_sha256)[..16].to_string());
+    let dest = dir.join(&name);
+    let part = dir.join(part_name(&name));
+
     if let Ok(rd) = fs::read_dir(dir) {
+        let prefix = format!("{stem}-");
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
-            let derived = n.ends_with(".bin") || n.ends_with(".part");
-            if derived && n != name {
+            if !n.starts_with(&prefix) || n == name {
+                continue;
+            }
+            let sweep = if n.ends_with(".part") {
+                e.metadata()
+                    .and_then(|m| m.modified())
+                    .map(|t| stale_part(t, SystemTime::now()))
+                    .unwrap_or(false)
+            } else {
+                n.ends_with(".bin")
+            };
+            if sweep {
                 let _ = fs::remove_file(e.path());
             }
         }
@@ -667,5 +762,77 @@ pub fn cached_copy(root: &Path, entry: &Entry, chunk: u64, dir: &Path) -> Result
     f.sync_all()?;
     drop(f);
     fs::rename(&part, &dest)?;
+    if !vf.matches(&dest) {
+        return Err(Error::HashesMismatch {
+            path: dest.display().to_string(),
+        });
+    }
     Ok(dest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chunk_count, stale_part, strip_verbatim};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn a_part_older_than_an_hour_is_stale() {
+        let now = SystemTime::now();
+        assert!(stale_part(now - Duration::from_secs(3601), now));
+        assert!(!stale_part(now - Duration::from_secs(60), now));
+        assert!(!stale_part(now + Duration::from_secs(10), now));
+    }
+
+    #[test]
+    fn the_chunk_cache_is_capped_by_bytes_not_count() {
+        use super::{write_hashes, Entry, VerifiedFile, RECENT_BYTES};
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let chunk = 262144u64;
+        let chunks = 100u64;
+        let dir = std::env::temp_dir().join(format!("alex-bytes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("big.bin");
+        {
+            let mut w = std::fs::File::create(&f).unwrap();
+            let block = vec![0xABu8; chunk as usize];
+            for _ in 0..chunks {
+                w.write_all(&block).unwrap();
+            }
+            w.sync_all().unwrap();
+        }
+        let hashes = write_hashes(&f, chunk).unwrap();
+        let raw = std::fs::read(&hashes).unwrap();
+        let mut h = [0u8; 32];
+        h.copy_from_slice(&Sha256::digest(&raw));
+        let e = Entry {
+            hashes_sha256: h,
+            size: chunk * chunks,
+            path: "big.bin".to_string(),
+        };
+        let mut r = VerifiedFile::open(&f, &e, chunk).unwrap();
+        for i in 0..chunks {
+            r.read_at(i * chunk, chunk as usize).unwrap();
+        }
+        assert_eq!(r.recent.len(), chunks as usize);
+        assert!(r.recent_bytes <= RECENT_BYTES);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn chunk_count_uses_ceiling_division_without_overflow() {
+        assert_eq!(chunk_count(0, 4096), 0);
+        assert_eq!(chunk_count(1, 4096), 1);
+        assert_eq!(chunk_count(4096, 4096), 1);
+        assert_eq!(chunk_count(4097, 4096), 2);
+        assert_eq!(chunk_count(u64::MAX, 1048576), u64::MAX.div_ceil(1048576));
+    }
+
+    #[test]
+    fn strip_verbatim_removes_the_windows_prefix() {
+        assert_eq!(strip_verbatim(r"\\?\C:\x").as_ref(), r"C:\x");
+        assert_eq!(strip_verbatim(r"\\?\UNC\server\share").as_ref(), r"\\server\share");
+        assert_eq!(strip_verbatim(r"C:\normal").as_ref(), r"C:\normal");
+        assert_eq!(strip_verbatim("/unix/path").as_ref(), "/unix/path");
+    }
 }

@@ -36,7 +36,7 @@ done
 
 tail -n +4 "$LIB/MANIFEST" | while read -r _ _ name; do
   [ -n "$name" ] || continue
-  line=$(grep -E "^$name " "$LIST" || true)
+  line=$(awk -v n="$name" '$1==n {print; exit}' "$LIST")
   if [ -n "$line" ]; then
     read -r _ bytes want url <<< "$line"
     echo "$name $bytes $want $url" >> "$PLAN"

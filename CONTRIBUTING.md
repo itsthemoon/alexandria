@@ -43,6 +43,7 @@ signed into the library.
   cargo test --workspace
   node crates/app/ui-tests/rank.test.mjs
   node crates/app/ui-tests/map.test.mjs
+  node crates/app/ui-tests/directions.test.mjs
   ```
 
 - **Keep it simple.** Prefer deleting code to adding it. New dependencies need a strong reason.

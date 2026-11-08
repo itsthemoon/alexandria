@@ -122,10 +122,12 @@ async function boot(path) {
     for (const p of info.packs || []) sel.appendChild(Object.assign(el('option', '', p.label), { value: p.path }));
     sel.classList.toggle('off', (info.packs || []).length < 2);
     mapPacks = info.maps || [];
+    setRoads(!!info.roads);
     const ms = $('mapselect');
     ms.textContent = '';
     for (const p of mapPacks) ms.appendChild(Object.assign(el('option', '', p.label), { value: p.path }));
-    if (mapPacks.some(p => p.path === 'planet.pmtiles')) ms.value = 'planet.pmtiles';
+    const street = mapPacks.find(p => p.street);
+    if (street) ms.value = street.path;
     else if (mapPacks.some(p => p.path === 'world.pmtiles')) ms.value = 'world.pmtiles';
     ms.classList.toggle('off', mapPacks.length < 2);
     renderStatus();
@@ -257,28 +259,28 @@ function closeArticle() {
   currentArticle = null;
   articleStack = [];
   articleText = '';
+  articleHtml = '';
   $('reader').classList.add('off');
   $('home').classList.remove('off');
   $('body').srcdoc = BLANK;
   busy();
 }
 
-function applyFont() {
-  const doc = $('body').contentDocument;
-  if (doc && doc.body) doc.body.style.fontSize = `${17 * fontScale}px`;
-}
-$('body').addEventListener('load', applyFont);
+let articleHtml = '';
 
-setInterval(() => {
-  const w = $('body').contentWindow;
-  let h = '';
-  try { h = w.location.hash; } catch (_) { return; }
-  if (!h.startsWith('#a:')) return;
-  w.location.hash = '';
-  let url = h.slice(3);
-  try { url = decodeURIComponent(url); } catch (_) { return; }
-  if (url && currentArticle) openArticle(url, currentArticle.pack);
-}, 120);
+function rewriteLinks(html, pack) {
+  const prefix = `alexandria-article:${encodeURIComponent(pack || '')}/`;
+  return html.split('class="al" href="#a:').join(`class="al" target="_top" href="${prefix}`);
+}
+
+function readerHtml(html, pack) {
+  const px = Math.round(17 * fontScale);
+  return rewriteLinks(html, pack).replace('</head>', `<style>body{font-size:${px}px !important}</style></head>`);
+}
+
+function applyFont() {
+  if (articleHtml) $('body').srcdoc = readerHtml(articleHtml, currentArticle && currentArticle.pack);
+}
 
 async function openArticle(url, pack, push = true) {
   showTab('home');
@@ -293,7 +295,8 @@ async function openArticle(url, pack, push = true) {
     const a = await invoke('read_article', { url, pack: pack || null });
     $('title').textContent = a.title;
     $('path').textContent = packLabel(pack);
-    $('body').srcdoc = a.html;
+    articleHtml = a.html;
+    $('body').srcdoc = readerHtml(a.html, pack);
     articleText = a.text;
     currentArticle = { url: a.url, title: a.title, pack };
   } catch (e) {

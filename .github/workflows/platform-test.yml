@@ -12,6 +12,21 @@ permissions:
   actions: read
 
 jobs:
+  pins:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: The installers' pinned SHA-256 values match this release build
+        run: |
+          case "$RUN_ID" in ""|*[!0-9]*) echo "bad run id"; exit 1;; esac
+          mkdir -p flat
+          for a in alexandria-macos alexandria-linux alexandria-windows-x64 alexandria-windows-arm64; do gh run download "$RUN_ID" -n "$a" -D "dl-$a"; done
+          find dl-* \( -name 'Alexandria-macos.tar.gz' -o -name 'alexandria-linux-x64.tar.gz' -o -name 'alexandria-windows-*.zip' \) -exec cp {} flat/ \;
+          scripts/check-pins.sh flat
+
   test:
     strategy:
       fail-fast: false

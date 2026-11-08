@@ -146,6 +146,9 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: artifacts
+      - name: SHA-256 of the app downloads, to pin in site/install.sh and site/install.ps1
+        run: |
+          find artifacts \( -name 'Alexandria-macos.tar.gz' -o -name 'alexandria-linux-x64.tar.gz' -o -name 'alexandria-windows-*.zip' \) -exec sha256sum {} + | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Create draft release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,34 @@
+name: mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: File name as listed in library/full.txt
+        required: true
+      url:
+        description: Upstream URL to copy from
+        required: true
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    environment: release
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+      - name: Build the CLI
+        run: cargo build --release -p alexandria-cli
+      - name: Copy in parts, hashing as it goes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NAME: ${{ inputs.name }}
+          URL: ${{ inputs.url }}
+        run: scripts/mirror.sh "$NAME" "$URL" library/full.txt library-data "$RUNNER_TEMP/work"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.name }}.hashes
+          path: ${{ runner.temp }}/work/${{ inputs.name }}.hashes

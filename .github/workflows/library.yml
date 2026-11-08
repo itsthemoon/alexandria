@@ -6,6 +6,10 @@ on:
       tag:
         description: Release tag to attach the library files to (e.g. v0.1.0)
         required: true
+      streets:
+        description: Build the planet street-name sidecar into this library
+        type: boolean
+        default: false
 
 jobs:
   lite:
@@ -28,6 +32,11 @@ jobs:
         run: cargo build --release -p alexandria-cli
       - name: Download pinned files and write MANIFEST
         run: ALEX=target/release/alex scripts/build-library.sh library/lite.txt "$RUNNER_TEMP/lib" "$TAG" "$(date -u +%F)"
+      - name: Build the street-name sidecar
+        if: ${{ inputs.streets }}
+        run: |
+          python3 -m pip install --quiet duckdb 2>/dev/null || python3 -m pip install --quiet --break-system-packages duckdb
+          scripts/build-streets.sh "$RUNNER_TEMP/lib" library/lite.txt
       - name: Sign with the release key
         env:
           RELEASE_SEED: ${{ secrets.ALEXANDRIA_RELEASE_SEED }}

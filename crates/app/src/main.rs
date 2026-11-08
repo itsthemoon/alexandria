@@ -1,10 +1,12 @@
+use alexandria_search::streets::Streets;
 use alexandria_core::{parse_verifying_key, Entry, Manifest, VerifiedFile};
 use alexandria_pmtiles::{Pmtiles, TileType};
-use alexandria_zim::{article_html, html_to_text, search, Zim};
+use alexandria_roads::Roads;
+use alexandria_zim::{article_html, article_html_with, html_to_text, search, Zim};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 mod llm;
 mod prompts;
@@ -12,10 +14,43 @@ mod prompts;
 static LIBRARY: Mutex<Option<PathBuf>> = Mutex::new(None);
 struct SearchCache {
     key: String,
-    db: alexandria_search::VerifiedDb,
+    db: Arc<Mutex<alexandria_search::VerifiedDb>>,
 }
 static SEARCH_CACHE: Mutex<Option<Vec<SearchCache>>> = Mutex::new(None);
 const MAX_OPEN_INDEXES: usize = 16;
+
+const IMAGE_BUDGET: usize = 24 << 20;
+const IMAGE_MAX: usize = 4 << 20;
+const IMAGE_MIN_LEFT: usize = 1024;
+const IMAGE_MAX_LOOKUPS: usize = 64;
+const IMAGE_ATTEMPT_COST: usize = 4 << 20;
+
+struct ImageBudget {
+    left: usize,
+    lookups: usize,
+}
+
+impl ImageBudget {
+    fn new() -> ImageBudget {
+        ImageBudget { left: IMAGE_BUDGET, lookups: 0 }
+    }
+
+    fn cap(&mut self) -> Option<usize> {
+        if self.left < IMAGE_MIN_LEFT || self.lookups >= IMAGE_MAX_LOOKUPS {
+            return None;
+        }
+        self.lookups += 1;
+        Some(self.left.min(IMAGE_MAX) * 3 / 4)
+    }
+
+    fn charge(&mut self, uri: Option<String>) -> Option<String> {
+        match &uri {
+            Some(u) => self.left = self.left.saturating_sub(u.len()),
+            None => self.left = self.left.saturating_sub(IMAGE_ATTEMPT_COST),
+        }
+        uri
+    }
+}
 
 #[derive(Serialize)]
 struct FileInfo {
@@ -91,7 +126,7 @@ fn library_from_pointer(note: &std::path::Path) -> Option<PathBuf> {
     p.join("MANIFEST").is_file().then_some(p)
 }
 
-fn library_candidates() -> Vec<PathBuf> {
+fn known_libraries() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(p) = std::env::var("ALEX_LIBRARY") {
         out.push(PathBuf::from(p));
@@ -99,6 +134,14 @@ fn library_candidates() -> Vec<PathBuf> {
     if let Some(p) = library_from_pointer(&pointer_file()) {
         out.push(p);
     }
+    out
+}
+
+fn first_library(known: Vec<PathBuf>, scan: impl FnOnce() -> Vec<PathBuf>) -> Option<PathBuf> {
+    known.into_iter().next().or_else(|| scan().into_iter().next())
+}
+
+fn scanned_libraries() -> Vec<PathBuf> {
     let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")).ok().map(PathBuf::from);
     let mut mounts = vec![PathBuf::from("/Volumes"), PathBuf::from("/mnt")];
     if let Ok(user) = std::env::var("USER") {
@@ -110,7 +153,20 @@ fn library_candidates() -> Vec<PathBuf> {
     } else {
         Vec::new()
     };
-    out.extend(find_libraries(home.as_deref(), &mounts, &drives));
+    find_libraries(home.as_deref(), &mounts, &drives)
+}
+
+fn scanned_libraries_bounded() -> Vec<PathBuf> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(scanned_libraries());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap_or_default()
+}
+
+fn library_candidates() -> Vec<PathBuf> {
+    let mut out = known_libraries();
+    out.extend(scanned_libraries_bounded());
     out.dedup();
     out
 }
@@ -121,7 +177,7 @@ fn library_dir() -> Result<PathBuf, String> {
             return Ok(p.clone());
         }
     }
-    library_candidates().into_iter().next().ok_or_else(|| {
+    first_library(known_libraries(), scanned_libraries_bounded).ok_or_else(|| {
         "No library found. Get one with the install command at itsthemoon.github.io/alexandria"
             .to_string()
     })
@@ -133,6 +189,8 @@ fn select_library(path: &str) -> Result<PathBuf, String> {
         return Err(format!("{path} is not an Alexandria library"));
     }
     let selected = p.canonicalize().unwrap_or(p);
+    let clean = alexandria_core::strip_verbatim(&selected.to_string_lossy()).into_owned();
+    let selected = PathBuf::from(clean);
     let previous = LIBRARY.lock().ok().and_then(|g| g.clone());
     if let Ok(mut guard) = LIBRARY.lock() {
         *guard = Some(selected.clone());
@@ -150,8 +208,28 @@ fn load_manifest() -> Result<(PathBuf, Manifest), String> {
     let dir = library_dir()?;
     let root = parse_verifying_key(&trust_key()?).map_err(|e| e.to_string())?;
     let signed = alexandria_core::open_signed(&dir, &root).map_err(|e| e.to_string())?;
-    newest_release(&alexandria_core::config_dir().join("newest-release"), &signed.manifest.date)?;
+    let edition = edition_of(&signed.manifest.release);
+    newest_release(
+        &alexandria_core::config_dir().join(release_record(edition)),
+        &signed.manifest.date,
+    )?;
     Ok((dir, signed.manifest))
+}
+
+fn edition_of(release: &str) -> &str {
+    if release.to_ascii_lowercase().ends_with("-full") {
+        "full"
+    } else {
+        "lite"
+    }
+}
+
+fn release_record(edition: &str) -> String {
+    if edition == "full" {
+        "newest-release-full".to_string()
+    } else {
+        "newest-release".to_string()
+    }
 }
 
 fn newest_release(note: &Path, date: &str) -> Result<(), String> {
@@ -198,14 +276,11 @@ fn library_info_impl(path: Option<String>) -> Result<serde_json::Value, String> 
         .iter()
         .filter(|e| e.path.ends_with(".pmtiles"))
         .map(|e| {
-            let label = match e.path.as_str() {
-                "planet.pmtiles" => "World — street level",
-                "world.pmtiles" => "World — overview",
-                other => other.trim_end_matches(".pmtiles"),
-            };
-            serde_json::json!({ "path": e.path, "label": label })
+            let (label, street) = map_label(&e.path);
+            serde_json::json!({ "path": e.path, "label": label, "street": street })
         })
         .collect();
+    let roads = m.entries.iter().any(|e| e.path == "roads-us.roads");
     let model = llm::pick_model(&m).map(|e| llm::model_label(&e.path));
     Ok(serde_json::json!({
         "model": model,
@@ -214,9 +289,21 @@ fn library_info_impl(path: Option<String>) -> Result<serde_json::Value, String> 
         "files": files,
         "packs": packs,
         "maps": maps,
+        "roads": roads,
         "path": selected.display().to_string(),
         "libraries": libraries
     }))
+}
+
+fn map_label(path: &str) -> (String, bool) {
+    let stem = path.trim_end_matches(".pmtiles");
+    let dated = stem.len() == 8 && stem.bytes().all(|b| b.is_ascii_digit());
+    match stem {
+        "world" => ("World — overview".into(), false),
+        "planet" => ("World — street level".into(), true),
+        _ if dated => ("World — street level".into(), true),
+        _ => (stem.into(), false),
+    }
 }
 
 const KNOWN_PACKS: &[(&str, &str)] = &[
@@ -301,7 +388,31 @@ fn ask_impl(
     let (dir, m) = load_manifest()?;
     let mut all = Vec::new();
     for z in m.entries.iter().filter(|e| e.path.ends_with(".zim")) {
-        let found = with_db(&dir, &m, z, |db| alexandria_search::ask_candidates(db.conn(), &z.path, &question).ok());
+        let found = with_db(&dir, &m, z, |db| {
+            let vf = VerifiedFile::open_in(&dir, z, m.chunk).ok()?;
+            let zim = Zim::open(vf).ok()?;
+            let zim = std::sync::Mutex::new(zim);
+            let ocr = ocr_for(&dir, &m, &z.path);
+            alexandria_search::ask_candidates(db.conn(), &z.path, &question, &|url| {
+                let (raw, mime, e_url) = {
+                    let mut zim = zim.lock().unwrap();
+                    let idx = zim.find_index('C', url).or_else(|_| zim.find_index('A', url)).ok()?;
+                    let e = zim.resolve(idx).ok()?;
+                    let mime = zim.mime(e.mime).map(str::to_string);
+                    let raw = zim.read_entry_blob(&e).ok()?;
+                    (raw, mime, e.url)
+                };
+                if mime.as_deref() == Some("application/pdf") {
+                    match alexandria_search::pdf_text_only(&raw).filter(|t| t.split_whitespace().count() >= 20) {
+                        Some(text) => Some(text),
+                        None => ocr.as_ref().and_then(|o| o.text(&e_url).map(str::to_string)),
+                    }
+                } else {
+                    Some(html_to_text(&String::from_utf8_lossy(&raw)))
+                }
+            })
+            .ok()
+        });
         all.extend(found.unwrap_or_default().into_iter().map(|p| (z.path.clone(), p)));
     }
     let picked: Vec<(String, String)> = if all.is_empty() {
@@ -396,7 +507,11 @@ fn read_article_impl(url: String, pack: Option<String>) -> Result<Article, Strin
     let raw = String::from_utf8_lossy(&body);
     let text = html_to_text(&raw);
     let html = if mime == "text/html" {
-        article_html(&raw)
+        let mut budget = ImageBudget::new();
+        article_html_with(&raw, &mut |src| {
+            let max = budget.cap()?;
+            budget.charge(z.image_data_uri(src, max))
+        })
     } else {
         text_page(None, &text)
     };
@@ -427,6 +542,12 @@ async fn library_info(
     if let Ok(mut guard) = SEARCH_CACHE.lock() {
         *guard = None;
     }
+    if let Ok(mut guard) = STREETS.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = ROADS.lock() {
+        *guard = None;
+    }
     Ok(info)
 }
 
@@ -454,6 +575,8 @@ struct BrowseItem {
 #[derive(Serialize)]
 struct BrowsePage {
     total: usize,
+    partial: bool,
+    more: bool,
     items: Vec<BrowseItem>,
 }
 
@@ -470,36 +593,48 @@ async fn browse(
         let entry = zim_entry_for(&m, pack.as_deref())?;
         let vf = VerifiedFile::open_in(&dir, &entry, m.chunk).map_err(|e| e.to_string())?;
         let mut z = Zim::open(vf).map_err(|e| e.to_string())?;
-        let needle = q.unwrap_or_default().to_lowercase();
-        let mut rows: Vec<(String, BrowseItem)> = z
-            .scan_entries()
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(|e| e.mime != 0xFFFF && e.mime < 0xFFFD && !e.title.is_empty())
-            .map(|e| {
-                (
-                    e.title.to_lowercase(),
-                    BrowseItem {
-                        title: e.title,
-                        url: e.url,
-                    },
-                )
-            })
-            .filter(|(key, _)| needle.is_empty() || key.contains(&needle))
-            .collect();
-        rows.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let mut rows: Vec<BrowseItem> = rows.into_iter().map(|(_, row)| row).collect();
-        if sort.as_deref() == Some("za") {
-            rows.reverse();
-        }
-        let total = rows.len();
+        let needle = q.unwrap_or_default();
+        let reverse = sort.as_deref() == Some("za");
         let start = offset.unwrap_or(0) as usize;
         let take = limit.unwrap_or(100).min(500) as usize;
-        let items = rows.into_iter().skip(start).take(take).collect();
-        Ok(BrowsePage { total, items })
+        let (total, more, partial, entries) = if needle.is_empty() {
+            let (total, entries) = z.browse(&needle, reverse, start, take).map_err(|e| e.to_string())?;
+            (total, false, false, entries)
+        } else if let Some((total, more, hits)) = with_db(&dir, &m, &entry, |db| {
+            alexandria_search::browse(db.conn(), &needle, reverse, start, take).ok()
+        }) {
+            let entries = verified_browse_entries(&mut z, hits);
+            (total, more, false, entries)
+        } else {
+            let (total, entries) = z.browse(&needle, reverse, start, take).map_err(|e| e.to_string())?;
+            let partial = z.header.article_count as usize > alexandria_zim::FILTER_SCAN_CAP;
+            (total, false, partial, entries)
+        };
+        let items = entries
+            .into_iter()
+            .map(|e| BrowseItem {
+                title: e.title,
+                url: e.url,
+            })
+            .collect();
+        Ok(BrowsePage { total, partial, more, items })
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn verified_browse_entries(z: &mut Zim<VerifiedFile>, hits: Vec<alexandria_search::Hit>) -> Vec<alexandria_zim::Entry> {
+    let mut out: Vec<alexandria_zim::Entry> = Vec::new();
+    for h in hits {
+        let Some(e) = z.lookup_url(&h.url) else {
+            continue;
+        };
+        if out.iter().any(|f| f.url == e.url) {
+            continue;
+        }
+        out.push(e);
+    }
+    out
 }
 
 const LANGUAGES: &[&str] = &[
@@ -590,10 +725,12 @@ fn with_db<T>(
         if cache.len() >= MAX_OPEN_INDEXES {
             cache.remove(0);
         }
-        cache.push(SearchCache { key: key.clone(), db });
+        cache.push(SearchCache { key: key.clone(), db: Arc::new(Mutex::new(db)) });
     }
-    let c = cache.iter().find(|c| c.key == key)?;
-    f(&c.db)
+    let db = cache.iter().find(|c| c.key == key)?.db.clone();
+    drop(guard);
+    let conn = db.lock().ok()?;
+    f(&conn)
 }
 
 fn with_index(
@@ -606,6 +743,82 @@ fn with_index(
 }
 
 static PDF_TITLES: Mutex<Option<std::collections::HashMap<String, String>>> = Mutex::new(None);
+
+static STREETS: Mutex<Option<(std::path::PathBuf, Streets)>> = Mutex::new(None);
+
+static ROADS: Mutex<Option<(std::path::PathBuf, Roads)>> = Mutex::new(None);
+
+#[derive(serde::Serialize)]
+#[allow(non_snake_case)]
+struct StreetHit {
+    name: String,
+    lat: f32,
+    lon: f32,
+    place: Option<String>,
+}
+
+#[tauri::command]
+async fn streets_search(
+    q: String,
+    lat: Option<f32>,
+    lon: Option<f32>,
+    limit: Option<usize>,
+) -> Result<Vec<StreetHit>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if q.trim().chars().count() < 2 {
+            return Ok(Vec::new());
+        }
+        let (dir, m) = load_manifest()?;
+        let file = dir.join("streets.txt");
+        let entry = m.entries.iter().find(|e| e.path == "streets.txt").cloned();
+        let mut cache = STREETS.lock().map_err(|e| e.to_string())?;
+        if cache.as_ref().map(|(p, _)| p != &file).unwrap_or(true) {
+            let opened = entry
+                .as_ref()
+                .and_then(|e| VerifiedFile::open_in(&dir, e, m.chunk).ok())
+                .and_then(|vf| Streets::open_verified(vf, m.chunk));
+            *cache = opened.map(|s| (file.clone(), s));
+        }
+        let Some((_, streets)) = cache.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let near = match (lat, lon) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        };
+        let rows = streets.find(&q, near, limit.unwrap_or(8).clamp(1, 20));
+        Ok(rows
+            .into_iter()
+            .map(|(name, lat, lon, place)| StreetHit { name, lat, lon, place })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn roads_entry(m: &Manifest) -> Result<Entry, String> {
+    m.entries.iter().find(|e| e.path == "roads-us.roads").cloned().ok_or_else(|| "this library has no roads pack".to_string())
+}
+
+#[tauri::command]
+async fn route(from: [f64; 2], to: [f64; 2]) -> Result<alexandria_roads::Route, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (dir, m) = load_manifest()?;
+        let entry = roads_entry(&m)?;
+        let file = dir.join("roads-us.roads");
+        let mut cache = ROADS.lock().map_err(|e| e.to_string())?;
+        if cache.as_ref().map(|(p, _)| p != &file).unwrap_or(true) {
+            let roads = VerifiedFile::open_in(&dir, &entry, m.chunk).map_err(|e| e.to_string()).and_then(Roads::open)?;
+            *cache = Some((file.clone(), roads));
+        }
+        let Some((_, roads)) = cache.as_mut() else {
+            return Err("the roads pack could not be opened".to_string());
+        };
+        roads.route((from[0], from[1]), (to[0], to[1]))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 
 fn checked_hits(z: &mut Zim<VerifiedFile>, pack: &Entry, hits: Vec<alexandria_search::Hit>, q: &str) -> Vec<SearchHit> {
     let mut found: Vec<(alexandria_zim::Entry, bool, bool)> = Vec::new();
@@ -662,23 +875,29 @@ async fn search_articles(q: String, pack: Option<String>, limit: Option<usize>) 
         let entry = zim_entry_for(&m, pack.as_deref())?;
         let vf = VerifiedFile::open_in(&dir, &entry, m.chunk).map_err(|e| e.to_string())?;
         let mut z = Zim::open(vf).map_err(|e| e.to_string())?;
+        let exact = alexandria_search::title_urls(&q).into_iter().find(|u| z.lookup_url(u).is_some());
         if let Some(mut hits) = search_with_index(&dir, &m, &entry, &q) {
             hits.truncate(limit);
+            if let Some(url) = exact.clone() {
+                hits.retain(|h| h.url != url);
+                hits.insert(0, alexandria_search::Hit { title: url.clone(), url, all: true });
+                hits.truncate(limit);
+            }
             let hits = checked_hits(&mut z, &entry, hits, &q);
             if !hits.is_empty() {
                 return Ok(hits);
             }
         }
-        let hits = search(&mut z, &q, limit).map_err(|e| e.to_string())?;
-        Ok(hits
-            .into_iter()
-            .map(|h| SearchHit {
-                title: h.title,
-                url: h.url,
-                snippet: None,
-                all: true,
-            })
-            .collect())
+        let mut out = match exact {
+            Some(url) => checked_hits(&mut z, &entry, vec![alexandria_search::Hit { title: url.clone(), url, all: true }], &q),
+            None => Vec::new(),
+        };
+        for h in search(&mut z, &q, limit).map_err(|e| e.to_string())? {
+            if out.len() < limit && !out.iter().any(|x| x.url == h.url) {
+                out.push(SearchHit { title: h.title, url: h.url, snippet: None, all: true });
+            }
+        }
+        Ok(out)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -952,7 +1171,7 @@ async fn personal_open(name: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
-struct MapState(Mutex<Option<(String, Pmtiles<VerifiedFile>)>>);
+struct MapState(Arc<Mutex<Option<(String, Pmtiles<VerifiedFile>)>>>);
 
 fn default_map() -> Result<String, String> {
     let (_, m) = load_manifest()?;
@@ -995,33 +1214,38 @@ async fn map_info(
     state: tauri::State<'_, MapState>,
     pack: Option<String>,
 ) -> Result<MapInfo, String> {
-    let want = match pack {
-        Some(p) => p,
-        None => default_map()?,
-    };
-    let mut guard = state.0.lock().map_err(|_| "map lock".to_string())?;
-    let stale = guard.as_ref().map(|(p, _)| p != &want).unwrap_or(true);
-    if stale {
-        *guard = Some((want.clone(), open_map(&want)?));
-    }
-    let p = &guard.as_ref().unwrap().1;
-    let kind = match p.tile_type() {
-        TileType::Mvt => "mvt",
-        TileType::Png => "png",
-        TileType::Jpeg => "jpeg",
-        TileType::Webp => "webp",
-        TileType::Other(_) => "unsupported",
-    };
-    Ok(MapInfo {
-        min_zoom: p.header.min_zoom,
-        max_zoom: p.header.max_zoom,
-        min_lon: p.min_lon,
-        min_lat: p.min_lat,
-        max_lon: p.max_lon,
-        max_lat: p.max_lat,
-        global: p.max_lon - p.min_lon > 300.0,
-        kind: kind.to_string(),
+    let state = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let want = match pack {
+            Some(p) => p,
+            None => default_map()?,
+        };
+        let mut guard = state.lock().map_err(|_| "map lock".to_string())?;
+        let stale = guard.as_ref().map(|(p, _)| p != &want).unwrap_or(true);
+        if stale {
+            *guard = Some((want.clone(), open_map(&want)?));
+        }
+        let p = &guard.as_ref().unwrap().1;
+        let kind = match p.tile_type() {
+            TileType::Mvt => "mvt",
+            TileType::Png => "png",
+            TileType::Jpeg => "jpeg",
+            TileType::Webp => "webp",
+            TileType::Other(_) => "unsupported",
+        };
+        Ok(MapInfo {
+            min_zoom: p.header.min_zoom,
+            max_zoom: p.header.max_zoom,
+            min_lon: p.min_lon,
+            min_lat: p.min_lat,
+            max_lon: p.max_lon,
+            max_lat: p.max_lat,
+            global: p.max_lon - p.min_lon > 300.0,
+            kind: kind.to_string(),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1061,20 +1285,25 @@ fn map_glyphs(fontstack: String, range: String) -> tauri::ipc::Response {
 }
 
 #[tauri::command]
-fn map_tile(
+async fn map_tile(
     state: tauri::State<'_, MapState>,
     z: u8,
     x: u32,
     y: u32,
 ) -> Result<tauri::ipc::Response, String> {
-    let mut guard = state.0.lock().map_err(|_| "map lock".to_string())?;
-    if guard.is_none() {
-        let want = default_map()?;
-        *guard = Some((want.clone(), open_map(&want)?));
-    }
-    let p = &mut guard.as_mut().unwrap().1;
-    let bytes = tile_or_empty(p.tile(z, x, y))?;
-    Ok(tauri::ipc::Response::new(bytes))
+    let state = state.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = state.lock().map_err(|_| "map lock".to_string())?;
+        if guard.is_none() {
+            let want = default_map()?;
+            *guard = Some((want.clone(), open_map(&want)?));
+        }
+        let p = &mut guard.as_mut().unwrap().1;
+        let bytes = tile_or_empty(p.tile(z, x, y))?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn tile_or_empty(r: alexandria_pmtiles::Result<Vec<u8>>) -> Result<Vec<u8>, String> {
@@ -1085,9 +1314,61 @@ fn tile_or_empty(r: alexandria_pmtiles::Result<Vec<u8>>) -> Result<Vec<u8>, Stri
     }
 }
 
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| (c as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn article_target(raw: &str) -> Option<(String, String)> {
+    let rest = raw.strip_prefix("alexandria-article:")?;
+    let (pack, url) = rest.split_once('/')?;
+    Some((percent_decode(pack), percent_decode(url)))
+}
+
+fn own_page(raw: &str) -> bool {
+    raw == "about:srcdoc"
+        || raw == "about:blank"
+        || ["tauri://localhost/", "http://tauri.localhost/", "https://tauri.localhost/"]
+            .iter()
+            .any(|p| raw.starts_with(p))
+        || ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"].contains(&raw)
+}
+
+fn article_nav<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("article-nav")
+        .on_navigation(|webview, url| {
+            if let Some((pack, target)) = article_target(url.as_str()) {
+                let js = format!(
+                    "openArticle({}, {})",
+                    serde_json::to_string(&target).unwrap_or_default(),
+                    serde_json::to_string(&pack).unwrap_or_default()
+                );
+                let _ = webview.eval(js);
+                return false;
+            }
+            own_page(url.as_str())
+        })
+        .build()
+}
+
 fn main() {
     tauri::Builder::default()
-        .manage(MapState(Mutex::new(None)))
+        .plugin(article_nav())
+        .manage(MapState(Arc::new(Mutex::new(None))))
         .invoke_handler(tauri::generate_handler![
             library_info,
             read_article,
@@ -1097,6 +1378,8 @@ fn main() {
             map_for_point,
             map_glyphs,
             search_articles,
+            streets_search,
+            route,
             translate,
             languages,
             browse,
@@ -1128,7 +1411,16 @@ mod page_tests {
 
 #[cfg(test)]
 mod map_tests {
-    use super::tile_or_empty;
+    use super::{map_label, tile_or_empty};
+
+    #[test]
+    fn a_dated_protomaps_build_is_the_street_level_planet() {
+        assert_eq!(map_label("20261104.pmtiles"), ("World — street level".to_string(), true));
+        assert_eq!(map_label("planet.pmtiles"), ("World — street level".to_string(), true));
+        assert_eq!(map_label("world.pmtiles"), ("World — overview".to_string(), false));
+        assert_eq!(map_label("nyc.pmtiles"), ("nyc".to_string(), false));
+        assert_eq!(map_label("2026110.pmtiles"), ("2026110".to_string(), false));
+    }
     use alexandria_pmtiles::Error;
 
     #[test]
@@ -1216,9 +1508,41 @@ mod pack_tests {
 }
 
 #[cfg(test)]
+mod roads_tests {
+    use super::roads_entry;
+    use alexandria_core::Manifest;
+
+    fn manifest(paths: &[&str]) -> Manifest {
+        let z = "0".repeat(64);
+        let mut t = String::from("alexandria-manifest 1\nrelease v1 2026-10-27\nchunk 1048576\n");
+        for p in paths {
+            t.push_str(&format!("{z} 1 {p}\n"));
+        }
+        Manifest::parse(&t).unwrap()
+    }
+
+    #[test]
+    fn routing_is_refused_when_the_library_has_no_roads_pack() {
+        let m = manifest(&["wikipedia_en-simple.zim", "world.pmtiles"]);
+        assert!(roads_entry(&m).is_err());
+        let m = manifest(&["wikipedia_en-simple.zim", "roads-us.roads"]);
+        assert_eq!(roads_entry(&m).unwrap().path, "roads-us.roads");
+    }
+}
+
+#[cfg(test)]
 mod pointer_tests {
-    use super::library_from_pointer;
+    use super::{first_library, library_from_pointer};
     use std::fs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_known_library_opens_without_scanning_drives() {
+        let known = vec![PathBuf::from("/lib")];
+        let got = first_library(known, || panic!("scanned drives although a library was known"));
+        assert_eq!(got, Some(PathBuf::from("/lib")));
+        assert_eq!(first_library(Vec::new(), || vec![PathBuf::from("/found")]), Some(PathBuf::from("/found")));
+    }
 
     #[test]
     fn the_installer_note_points_the_app_at_any_folder() {
@@ -1241,7 +1565,7 @@ mod pointer_tests {
 
 #[cfg(test)]
 mod newest_tests {
-    use super::newest_release;
+    use super::{edition_of, newest_release, release_record};
     use std::fs;
 
     #[test]
@@ -1259,6 +1583,30 @@ mod newest_tests {
         assert_eq!(fs::read_to_string(&note).unwrap(), "2027-01-15");
         fs::write(&note, "junk").unwrap();
         assert!(newest_release(&note, "2026-10-27").is_ok());
+        fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn full_releases_key_a_separate_record() {
+        assert_eq!(edition_of("v0.2.0"), "lite");
+        assert_eq!(edition_of("v0.2.0-full"), "full");
+        assert_eq!(release_record("lite"), "newest-release");
+        assert_eq!(release_record("full"), "newest-release-full");
+    }
+
+    #[test]
+    fn full_and_lite_keep_separate_rollback_records() {
+        let t = std::env::temp_dir().join(format!("alex-ed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        fs::create_dir_all(&t).unwrap();
+        let lite = t.join("newest-release");
+        let full = t.join("newest-release-full");
+        assert!(newest_release(&lite, "2026-11-05").is_ok());
+        assert!(newest_release(&full, "2026-11-04").is_ok());
+        assert!(newest_release(&full, "2026-11-03").unwrap_err().contains("older"));
+        assert!(newest_release(&lite, "2026-11-04").unwrap_err().contains("older"));
+        assert_eq!(fs::read_to_string(&lite).unwrap(), "2026-11-05");
+        assert_eq!(fs::read_to_string(&full).unwrap(), "2026-11-04");
         fs::remove_dir_all(&t).unwrap();
     }
 }
@@ -1290,5 +1638,132 @@ mod image_tests {
         let mut bomb = encoded(1, 1, image::ImageFormat::Png);
         bomb[16..24].copy_from_slice(&[0, 1, 0x86, 0xa0, 0, 1, 0x86, 0xa0]);
         assert!(clean_image(&bomb, 320).is_err());
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::{ImageBudget, IMAGE_ATTEMPT_COST, IMAGE_BUDGET};
+
+    #[test]
+    fn failed_lookups_consume_the_budget() {
+        let mut b = ImageBudget::new();
+        let mut attempts = 0;
+        while b.cap().is_some() {
+            attempts += 1;
+            assert!(b.charge(None).is_none());
+        }
+        assert_eq!(attempts, IMAGE_BUDGET / IMAGE_ATTEMPT_COST);
+        assert!(attempts < 64, "hostile lookups stop long before the 64 cap");
+    }
+
+    #[test]
+    fn a_good_image_spends_only_its_length() {
+        let mut b = ImageBudget::new();
+        assert!(b.cap().is_some());
+        let uri = "data:image/png;base64,AAAAAAAA".to_string();
+        let before = b.left;
+        assert_eq!(b.charge(Some(uri.clone())), Some(uri.clone()));
+        assert_eq!(b.left, before - uri.len());
+    }
+
+    #[test]
+    fn a_failed_lookup_charges_the_fixed_cost() {
+        let mut b = ImageBudget::new();
+        b.cap().unwrap();
+        let before = b.left;
+        assert!(b.charge(None).is_none());
+        assert_eq!(b.left, before - IMAGE_ATTEMPT_COST);
+    }
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::{article_target, own_page, percent_decode};
+
+    #[test]
+    fn only_the_app_pages_may_load_in_the_window() {
+        assert!(own_page("tauri://localhost/index.html"));
+        assert!(own_page("http://tauri.localhost/index.html"));
+        assert!(own_page("https://tauri.localhost/"));
+        assert!(own_page("about:srcdoc"));
+        assert!(own_page("about:blank"));
+        assert!(!own_page("https://example.com/"));
+        assert!(!own_page("http://tauri.localhost.example.com/"));
+        assert!(!own_page("file:///etc/passwd"));
+        assert!(!own_page("javascript:alert(1)"));
+    }
+
+    #[test]
+    fn percent_decode_recovers_urls() {
+        assert_eq!(percent_decode("A%2FWater"), "A/Water");
+        assert_eq!(percent_decode("S%C3%A3o_Paulo"), "São_Paulo");
+        assert_eq!(percent_decode("a%25b"), "a%b");
+        assert_eq!(percent_decode("plain"), "plain");
+    }
+
+    #[test]
+    fn only_the_article_scheme_is_a_link() {
+        assert_eq!(
+            article_target("alexandria-article:Wikipedia%20EN/A%2FWater"),
+            Some(("Wikipedia EN".to_string(), "A/Water".to_string()))
+        );
+        assert_eq!(
+            article_target("alexandria-article:ifixit.zim/A%2FWater"),
+            Some(("ifixit.zim".to_string(), "A/Water".to_string()))
+        );
+        assert_eq!(article_target("https://example.com/x"), None);
+        assert_eq!(article_target("tauri://localhost/index.html"), None);
+        assert_eq!(article_target("about:srcdoc#a:A%2FWater"), None);
+        assert_eq!(article_target("alexandria-article-x:y"), None);
+        assert_eq!(article_target("alexandria-article:A%2FWater"), None);
+    }
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::with_db;
+    use alexandria_core::{Entry, Manifest};
+    use std::fs;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn search_does_not_wait_for_a_long_ask_read() {
+        let t = std::env::temp_dir().join(format!("alex-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let dir = t.join("Alexandria");
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(t.join("Alexandria-Index")).unwrap();
+        let entry = |pack: &str| Entry { hashes_sha256: [0u8; 32], size: 0, path: pack.to_string() };
+        for pack in ["a.zim", "b.zim"] {
+            let db = t.join("Alexandria-Index").join(format!("{pack}.0000000000000000.search.db"));
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            conn.execute("CREATE TABLE articles (title TEXT, url TEXT, body TEXT)", []).unwrap();
+        }
+        let m = Manifest { release: "v".into(), date: "2026-10-27".into(), chunk: 1048576, entries: Vec::new() };
+        let (tx, rx) = mpsc::channel();
+        let tdir = dir.clone();
+        let tml = m.clone();
+        let tentry = entry("a.zim");
+        let slow = std::thread::spawn(move || {
+            with_db(&tdir, &tml, &tentry, |db| {
+                tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(500));
+                let _ = db.conn();
+                Some(())
+            })
+        });
+        rx.recv().unwrap();
+        let start = Instant::now();
+        let got = with_db(&dir, &m, &entry("b.zim"), |db| {
+            let _ = db.conn();
+            Some(7)
+        });
+        let elapsed = start.elapsed();
+        assert_eq!(got, Some(7));
+        assert!(elapsed < Duration::from_millis(400), "search waited {elapsed:?} for the ask read");
+        slow.join().unwrap();
+        fs::remove_dir_all(&t).unwrap();
     }
 }
