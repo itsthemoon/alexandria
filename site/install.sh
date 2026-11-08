@@ -22,7 +22,7 @@ ask() {
 }
 sha() { if command -v sha256sum >/dev/null; then sha256sum < "$1" | cut -d' ' -f1; else shasum -a 256 < "$1" | cut -d' ' -f1; fi; }
 size() { wc -c < "$1" | tr -d ' '; }
-free_bytes() { df -Pk "$1" | awk 'NR==2 {print $4 * 1024}'; }
+free_bytes() { df -Pk "$1" | awk 'NR==2 {printf "%.0f\n", $4 * 1024}'; }
 PROTO="=https"; [ -n "${ALEXANDRIA_BASE:-}" ] && PROTO="=https,file"
 get() { curl -fL -g --proto "$PROTO" --retry 5 --retry-delay 3 --progress-bar "$@"; }
 pinned() { [ -n "${ALEXANDRIA_BASE:-}" ] || [ "$(sha "$1")" = "$2" ] || fail "The app download does not match the checksum in this installer. Nothing was installed."; }
@@ -44,7 +44,7 @@ awk -v base="${ALEXANDRIA_BASE:-}" -v hosts="$HOSTS" '
     for (i = 4; i <= NF; i++) { good = (base != "" && index($i, base "/") == 1); for (k = 1; k <= nh; k++) if (index($i, h[k]) == 1) good = 1; if (!good) ok = 0 }
     if (!ok) { print "bad line " NR ": " $0 > "/dev/stderr"; bad = 1 } }
   END { exit bad }' "$TMP/files.txt" || fail "The file list from the release is malformed. Nothing was written."
-need=$(awk '{s += $2} END {print s}' "$TMP/files.txt")
+need=$(awk '{s += $2} END {printf "%.0f\n", s}' "$TMP/files.txt")
 gb() { awk -v b="$1" 'BEGIN {printf "%.1f GB", b / 1e9}'; }
 
 case "$(uname -s)-$(uname -m)" in

@@ -58,8 +58,9 @@ flagged.
 ### The Full edition
 
 The Full edition is everything in Lite plus all of English Wikipedia with its images
-(about 127 GB) and a street-level map of the whole planet (about 139 GB) — about
-280 GB in all. It needs a large external drive: when the installer asks where the
+(about 127 GB), a street-level map of the whole planet (about 139 GB), search for streets
+by name, and turn-by-turn driving directions in the United States — about 281 GB in all.
+It needs a large external drive: when the installer asks where the
 library should go, type the drive's folder (for example `/Volumes/MyDrive` on a Mac). It
 checks that there is enough room first (the library, plus about a quarter of that again
 for search, plus 2 GB). Building the search index for all of Wikipedia takes a few hours
@@ -103,8 +104,9 @@ choice for most computers.
 | World map | countries, cities and coastlines (overview zoom) | 15 MB |
 | LFM3 1.7B | the local AI model for Ask and Translate | 1.0 GB |
 
-The **Full edition** adds all of English Wikipedia with images and a street-level map of
-the whole planet, about 280 GB. See [The Full edition](#the-full-edition) above.
+The **Full edition** adds all of English Wikipedia with images, a street-level map of
+the whole planet, street search and US driving directions, about 281 GB. See
+[The Full edition](#the-full-edition) above.
 
 ## Using it
 
@@ -164,6 +166,10 @@ checked against the signed hashes every time it is used.
 - **The Lite map stops at country and city level.** Street maps come with the Full edition.
   Street search matches the start of a name and labels each result with the nearest town and
   country (for example `Avenue des Champs-Élysées · Paris, FR`); it does not cover house numbers.
+- **Driving directions cover the United States, by car, for trips up to 250 km.** They follow
+  one-way streets, turn restrictions and car ferries from OpenStreetMap, avoid private and
+  unpaved roads, and use no live traffic. Long trips can take up to about a minute to work out.
+  Check road signs: the map is only as current as its OpenStreetMap data.
 - **Text read from scans.** About 1 in 10 of the survival guides are scanned images with no
   text inside. Their text is read by recognition when the library is built, and ships signed
   with it, so they can be searched and read like the rest. Recognition is good but not perfect:

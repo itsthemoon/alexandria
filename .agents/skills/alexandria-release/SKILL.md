@@ -63,7 +63,10 @@ The release key never leaves the `release` environment in CI.
    last check runs an installer that is meant to fail must end with `exit 0`.
    `install.sh` must not use awk interval expressions (`{64}`): the `mawk` in Ubuntu 22.04 and Debian
    (older than 1.3.4-20200717) treats braces literally, so every line would look malformed. Use
-   `length()` checks. CI's newer Ubuntu won't catch this.
+   `length()` checks. The same mawk prints large numbers as `2.71014e+10`, which breaks shell
+   arithmetic, so every byte count awk prints goes through `printf "%.0f"`. CI's newer Ubuntu won't
+   catch either: build mawk 1.3.4-20200120 from invisible-island.net into a scratch dir and run the
+   installer tests with it first on `PATH`.
 
 ## 4. Mirror and host the big files
 
@@ -75,6 +78,13 @@ The release key never leaves the `release` environment in CI.
   environment; approve it the same way as the signing runs (section 5). A run has a 6 hour cap, so use
   a fast upstream mirror for the biggest file.
 - `mirror.yml` must already be on the public `main`: dispatch only after the code push.
+- `mirror.sh` uploads every part twice (to a staging release, then again to `library-data` after the
+  whole-file check), and a runner uploads to releases at roughly 10-15 MB/s. A 130 GB file then needs
+  more than the 6 hour job cap. For files that big, upload the parts from the verified drive instead
+  (the drive copy already passed `alex verify`; `full.yml` re-hashes every part before signing anyway):
+  cut each 1900 MiB part with `dd bs=1048576 skip=<i*1900> count=1900`, upload it, check the asset size,
+  delete the local part. A home connection did about 20 MB/s. A cancelled mirror run skips its cleanup
+  trap, so delete its `library-staging-*` release by hand (`gh release delete <tag> --yes --cleanup-tag`).
 - `scripts/mirror.sh` works inside a temp dir, not the checkout, so `gh` can't infer the repo from git
   there ("failed to run git: not a git repository"). The workflow sets `GH_REPO`; keep it on any step
   whose script changes directory before calling `gh`.
