@@ -57,6 +57,8 @@ The release key never leaves the `release` environment in CI.
    child's stderr into a terminating error under `$ErrorActionPreference = 'Stop'` when the output is
    captured with `2>&1` (switch to `Continue` before calling a command that is expected to fail).
    Shell installer tests must build a fake app archive for every OS they run on, not only macOS.
+   The Windows installer test caught a real bug: `%LOCALAPPDATA%\Programs` does not exist on a fresh
+   profile, so the installer must create the parent folder before moving the app into it.
 
 ## 4. Mirror and host the big files
 

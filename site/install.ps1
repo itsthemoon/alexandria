@@ -55,6 +55,7 @@ try {
   $AppDir = Join-Path $env:LOCALAPPDATA 'Programs\Alexandria'
   if (Test-Path $AppDir) { Remove-Item -Recurse -Force $AppDir }
   Expand-Archive -Path "$Tmp\app.zip" -DestinationPath "$Tmp\app"
+  New-Item -ItemType Directory -Force (Split-Path $AppDir) | Out-Null
   Move-Item "$Tmp\app\alexandria" $AppDir
   $Alex = Join-Path $AppDir 'alex.exe'
   $Exe = Join-Path $AppDir 'alexandria-app.exe'
