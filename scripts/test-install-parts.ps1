@@ -20,6 +20,7 @@ $sha = (Get-FileHash "$T\big.bin" -Algorithm SHA256).Hash.ToLower()
 Move-Item "$T\R\big.bin.part02" "$T\hold"
 $env:ALEXANDRIA_BASE = $base; $env:ALEXANDRIA_DIR = "$T\dest"; $env:ALEXANDRIA_EDITION = 'full'
 $script = Join-Path $PSScriptRoot '..\site\install.ps1'
+$ErrorActionPreference = 'Continue'
 $first = powershell -NoProfile -ExecutionPolicy Bypass -File $script 2>&1 | Out-String
 if ($LASTEXITCODE -eq 0) { throw "a missing part must fail the install: $first" }
 Move-Item "$T\hold" "$T\R\big.bin.part02"

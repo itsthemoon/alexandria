@@ -52,12 +52,22 @@ The release key never leaves the `release` environment in CI.
 3. Read the public diff yourself (`git -C <public> diff --stat`, then the files), rerun the tests in the
    public checkout, commit there as the maintainer, push `main`.
 4. Wait for CI to pass on every OS: `gh run watch <id> --exit-status`.
+   Windows-only failures seen before: a test deleting a temp dir while a cached SQLite connection still
+   holds a file open (os error 32; make temp cleanup best-effort), and Windows PowerShell 5.1 turning a
+   child's stderr into a terminating error under `$ErrorActionPreference = 'Stop'` when the output is
+   captured with `2>&1` (switch to `Continue` before calling a command that is expected to fail).
+   Shell installer tests must build a fake app archive for every OS they run on, not only macOS.
 
 ## 4. Mirror and host the big files
 
 - `library-data` is a GitHub release that holds files we host: 2 GiB per asset, 1000 assets, no total cap.
 - Upstream files that expire (Wikipedia maxi, the Protomaps planet build) go through `mirror.yml`, one
-  dispatch per file. Protomaps build URLs rotate, so mirror the planet before its dated build disappears.
+  dispatch per file: `gh workflow run mirror.yml -f name=<name in full.txt> -f url=<upstream URL>`.
+  Protomaps build URLs rotate, so mirror the planet before its dated build disappears. Check both URLs
+  answer `200` with the expected `content-length` first (`curl -sI`). Each run waits on the `release`
+  environment; approve it the same way as the signing runs (section 5). A run has a 6 hour cap, so use
+  a fast upstream mirror for the biggest file.
+- `mirror.yml` must already be on the public `main`: dispatch only after the code push.
 - Files we make ourselves (street index, US roads) are uploaded from the drive in 1900 MiB parts:
   `gh release upload library-data <name>.partNN --clobber`. Check every part's size after upload.
 

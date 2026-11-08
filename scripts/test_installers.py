@@ -30,6 +30,12 @@ def main():
             ti.size = len(script)
             ti.mode = 0o755
             tf.addfile(ti, io.BytesIO(script))
+        with tarfile.open(os.path.join(R, "alexandria-linux-x64.tar.gz"), "w:gz") as tf:
+            for name in ("alexandria/alex", "alexandria/alexandria-app"):
+                ti = tarfile.TarInfo(name)
+                ti.size = len(script)
+                ti.mode = 0o755
+                tf.addfile(ti, io.BytesIO(script))
 
         data = os.urandom(10000)
         with open(os.path.join(R, "small.bin"), "wb") as f:

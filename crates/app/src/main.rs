@@ -1764,6 +1764,6 @@ mod lock_tests {
         assert_eq!(got, Some(7));
         assert!(elapsed < Duration::from_millis(400), "search waited {elapsed:?} for the ask read");
         slow.join().unwrap();
-        fs::remove_dir_all(&t).unwrap();
+        let _ = fs::remove_dir_all(&t);
     }
 }
