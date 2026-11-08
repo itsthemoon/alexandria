@@ -59,6 +59,8 @@ The release key never leaves the `release` environment in CI.
    Shell installer tests must build a fake app archive for every OS they run on, not only macOS.
    The Windows installer test caught a real bug: `%LOCALAPPDATA%\Programs` does not exist on a fresh
    profile, so the installer must create the parent folder before moving the app into it.
+   A PowerShell CI step exits with the last native command's `$LASTEXITCODE`, so a test script whose
+   last check runs an installer that is meant to fail must end with `exit 0`.
 
 ## 4. Mirror and host the big files
 

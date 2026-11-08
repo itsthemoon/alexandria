@@ -32,3 +32,4 @@ $env:ALEXANDRIA_EDITION = 'bogus'
 $bad = powershell -NoProfile -ExecutionPolicy Bypass -File $script 2>&1 | Out-String
 if ($LASTEXITCODE -eq 0 -or $bad -notmatch 'must be lite or full') { throw "bad edition accepted: $bad" }
 Write-Host 'installer resumes multi-part downloads: ok'
+exit 0
