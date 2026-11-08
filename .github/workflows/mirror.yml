@@ -25,6 +25,7 @@ jobs:
       - name: Copy in parts, hashing as it goes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           NAME: ${{ inputs.name }}
           URL: ${{ inputs.url }}
         run: scripts/mirror.sh "$NAME" "$URL" library/full.txt library-data "$RUNNER_TEMP/work"

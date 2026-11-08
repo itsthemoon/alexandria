@@ -68,6 +68,9 @@ The release key never leaves the `release` environment in CI.
   environment; approve it the same way as the signing runs (section 5). A run has a 6 hour cap, so use
   a fast upstream mirror for the biggest file.
 - `mirror.yml` must already be on the public `main`: dispatch only after the code push.
+- `scripts/mirror.sh` works inside a temp dir, not the checkout, so `gh` can't infer the repo from git
+  there ("failed to run git: not a git repository"). The workflow sets `GH_REPO`; keep it on any step
+  whose script changes directory before calling `gh`.
 - Files we make ourselves (street index, US roads) are uploaded from the drive in 1900 MiB parts:
   `gh release upload library-data <name>.partNN --clobber`. Check every part's size after upload.
 
