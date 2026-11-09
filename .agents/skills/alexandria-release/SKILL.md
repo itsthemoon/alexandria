@@ -124,7 +124,14 @@ The release key never leaves the `release` environment in CI.
   script fixes can still go into this release.
 - Security review before publishing: secrets and personal data in every tracked file and release asset,
   the installers, the verification core and IPC surface, and the CI workflows. Fix findings with tests.
-- Publish the release. Run the real one-line install. For Full, reuse the drive: pass the drive's parent
+- Publish the release: `gh release edit v<ver> --draft=false --latest --title "v<ver> — <summary>"
+  --notes-file <notes>`. Release notes state only what was measured (say which test backs a number),
+  list the install commands for both editions and the SHA-256 of each app archive, and pass the same
+  privacy grep as the code.
+- Push the site: `git worktree add <dir> origin/gh-pages`, copy `index.html`, `install.sh` and
+  `install.ps1` from `site/`, commit, push. Wait for the Pages build of that commit
+  (`pages/builds/latest` shows `built` and the commit), then `curl` each file and `cmp` it with `site/`.
+- Run the real one-line install. For Full, reuse the drive: pass the drive's parent
   as `ALEXANDRIA_DIR` with the library already named `Alexandria`; it fetches the CI-signed MANIFEST and
   KEYS, skips files whose size and hash match, and verifies every byte against the release key.
 
